@@ -32,10 +32,10 @@ CV는 초당 30개 프레임(최대 30초)을 분석해 발목의 초기 지면 
    npx supabase functions deploy teacher-admin
    ```
 
-4. 교사 관리 코드를 최소 12자 이상의 무작위 값으로 정해 Supabase Edge Function secret으로 등록합니다. 브라우저나 저장소에 넣지 않습니다.
+4. 교사용 숫자 4자리 PIN을 정해 Supabase Edge Function secret `BIGJUMP_TEACHER_CODE`로 등록합니다. 이는 수업 생성과 명단 수정 화면을 여는 데 사용합니다.
 
    ```powershell
-   npx supabase secrets set BIGJUMP_TEACHER_CODE=여기에_긴_교사_관리_코드
+   npx supabase secrets set BIGJUMP_TEACHER_CODE=여기에_교사_PIN_4자리
    ```
 
 5. `config.js`에는 URL과 **publishable** 키만 둡니다. `service_role` 또는 secret key는 절대 클라이언트에 넣지 않습니다.

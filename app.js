@@ -524,7 +524,10 @@ $('#teacherModeButton').addEventListener('click',()=>{
 });
 $('#closeTeacher').addEventListener('click',()=>teacherDialog.close());
 $$('.teacher-tabs button').forEach(button=>button.addEventListener('click',()=>teacherTab(button.dataset.teacherTab)));
-async function teacherRequest(body) { return invoke('teacher-admin',body,teacherHeaders()); }
+async function teacherRequest(body) {
+  if(!/^\d{4}$/.test($('#teacherPin').value.trim())) throw new Error('교사 PIN은 숫자 4자리입니다.');
+  return invoke('teacher-admin',body,teacherHeaders());
+}
 $('#createClassButton').addEventListener('click',async()=>{
   showTeacherError('');
   const name=$('#classNameInput').value.trim();

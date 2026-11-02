@@ -27,7 +27,7 @@ Deno.serve(async (request) => {
   try {
     const pin = request.headers.get("x-teacher-code") ?? "";
     const expected = Deno.env.get("BIGJUMP_TEACHER_CODE") ?? "";
-    if (expected.length < 12 || !equalSecret(pin, expected)) return reply({ error: "교사 관리 코드를 확인해주세요." }, 403);
+    if (!/^\d{4}$/.test(expected) || !equalSecret(pin, expected)) return reply({ error: "교사 PIN을 확인해주세요." }, 403);
     const url = Deno.env.get("SUPABASE_URL")!;
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
