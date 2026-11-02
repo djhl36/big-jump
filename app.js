@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { analyzeJump, drawPose } from './pose-analysis.js';
+import { analyzeJump, drawPose } from './pose-analysis.js?v=dd86b523ec';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -91,10 +91,11 @@ async function startApp() {
   try {
     authUser = await ensureAnonymousSession();
     setConnection('익명 기기 연결됨', true);
-    const { data, error } = await supabase.from('class_members')
+    const { data: rows, error } = await supabase.from('class_members')
       .select('class_id,user_id,roster_id,display_name,group_id,role')
-      .eq('user_id', authUser.id).maybeSingle();
+      .eq('user_id', authUser.id).order('joined_at', { ascending: false }).limit(1);
     if (error) throw error;
+    const data = rows?.[0];
     if (data) await loadClassroom(data);
     else {
       joinDialog.showModal();
@@ -160,7 +161,8 @@ async function listRoster() {
     $('#joinCode').value = data.class_code;
     $('#joinClassName').textContent = data.class_name;
     classInfo = { id: data.class_id, name: data.class_name, join_code: data.class_code };
-    const options = ['<option value="">이름을 선택해주세요</option>', ...data.roster.map(row => `<option value="${escaped(row.id)}" ${row.selected ? 'selected' : ''}>${escaped(row.name)} · ${escaped(row.group)}</option>`)];
+    const lastRosterId = localStorage.getItem('bigjump.rosterId');
+    const options = ['<option value="">이름을 선택해주세요</option>', ...data.roster.map(row => `<option value="${escaped(row.id)}" ${row.selected || row.id === lastRosterId ? 'selected' : ''}>${escaped(row.name)} · ${escaped(row.group)}</option>`)];
     $('#studentNameSelect').innerHTML = options.join('');
     if (!data.roster.length) showJoinError('명단이 없거나 이미 모든 이름이 연결되어 있습니다. 선생님께 확인해주세요.');
   } catch (error) {
@@ -176,6 +178,7 @@ $('#joinSubmit').addEventListener('click', async () => {
   $('#joinSubmit').disabled = true;
   try {
     const data = await invoke('join-class', { action: 'join', class_code: code, roster_id: rosterId });
+    localStorage.setItem('bigjump.rosterId', rosterId);
     await loadClassroom(data.membership);
     toast(`${data.class_name}에 참여했습니다.`);
   } catch (error) { showJoinError(error.message); }
@@ -196,16 +199,11 @@ function renderGroups() {
     button.className = 'group-link';
     button.dataset.group = group.id;
     button.innerHTML = `<span class="group-avatar ${['ga-blue','ga-orange','ga-purple','ga-green'][index%4]}">${escaped(group.name.slice(0,1))}</span><span>${escaped(group.name)}</span>`;
-    button.addEventListener('click', () => {
-      const active = $('#filterButton').dataset.group === group.id;
-      $('#filterButton').dataset.group = active ? '' : group.id;
-      $('#filterButton').innerHTML = `${active?'모든 모둠':escaped(group.name)} <span>⌄</span>`;
-      $$('.post-card').forEach(card => card.classList.toggle('hidden-by-filter', !active && card.dataset.group !== group.id));
-    });
+    button.addEventListener('click', () => applyGroupFilter($('#filterButton').dataset.group === group.id ? '' : group.id));
     groupButtons.append(button);
   });
   host.after(groupButtons);
-  $('#filterButton').innerHTML = '모든 모둠 <span>⌄</span>';
+  applyGroupFilter('');
 }
 
 async function loadFeed() {
@@ -230,8 +228,20 @@ function renderFeed() {
   feed.replaceChildren();
   $('#wallCount').textContent = String(videoRows.length);
   if(!videoRows.length){const empty=document.createElement('div');empty.className='feed-placeholder';empty.textContent='아직 공유된 동작이 없어요. 첫 영상을 올려주세요.';feed.append(empty);}
-  for (const row of videoRows) {
+  const groupOrder = id => { const i = groups.findIndex(g=>g.id===id); return i<0 ? groups.length : i; };
+  const ordered = [...videoRows].sort((a,b)=>groupOrder(a.group_id)-groupOrder(b.group_id) || new Date(b.created_at)-new Date(a.created_at));
+  let lastGroup;
+  for (const row of ordered) {
     const group = groups.find(item => item.id === row.group_id);
+    if (row.group_id !== lastGroup) {
+      lastGroup = row.group_id;
+      const heading = document.createElement('div');
+      heading.className = 'group-section-title';
+      heading.dataset.group = row.group_id || '';
+      const count = ordered.filter(item=>item.group_id===row.group_id).length;
+      heading.innerHTML = `<strong>${escaped(group?.name || '모둠 없음')}</strong><span>${count}개 영상</span>`;
+      feed.append(heading);
+    }
     const results = row.analysis || {};
     const card = document.createElement('article');
     card.className = 'post-card';
@@ -250,37 +260,106 @@ function renderFeed() {
   $$('[data-open-video]',feed).forEach(button=>button.addEventListener('click',()=>openSavedVideo(button.dataset.openVideo)));
   $$('[data-comments]',feed).forEach(button=>button.addEventListener('click',()=>openFeedback(videoRows.find(row=>row.id===button.dataset.comments))));
   $$('[data-delete-video]',feed).forEach(button=>button.addEventListener('click',()=>deleteVideo(button.dataset.deleteVideo)));
-  const activeGroup=$('#filterButton').dataset.group;
-  $$('.post-card',feed).forEach(card=>card.classList.toggle('hidden-by-filter',Boolean(activeGroup)&&card.dataset.group!==activeGroup));
+  applyGroupFilter($('#filterButton').dataset.group||'');
+}
+function applyGroupFilter(groupId) {
+  $('#filterButton').dataset.group = groupId;
+  const group = groups.find(g=>g.id===groupId);
+  $('#filterButton').innerHTML = `${group?escaped(group.name):'모든 모둠'} <span>⌄</span>`;
+  $$('.post-card, .group-section-title').forEach(el=>el.classList.toggle('hidden-by-filter',Boolean(groupId)&&el.dataset.group!==groupId));
+  $$('.sidebar .group-link').forEach(link=>link.classList.toggle('active',link.dataset.group===groupId));
 }
 
+const ACTIVITIES = [
+  { key:'pogo-jump', name:'포고 점프', en:'Pogo Jump', desc:'발목 반동으로 짧고 빠르게 튀어 올라요.', items:[
+    ['ankle_spring','발목 탄성','무릎은 살짝만 굽히고 발목 반동으로 튀어 오르기'],
+    ['short_contact','짧은 접지','발이 닿자마자 바로 다시 뛰어오르기'],
+    ['forefoot_landing','앞꿈치 착지','뒤꿈치가 바닥에 닿지 않게 하기'],
+    ['tall_posture','곧은 몸통','시선은 앞, 몸통이 앞뒤로 흔들리지 않기']]},
+  { key:'jump-stick', name:'점프 앤 스틱', en:'Jump & Stick', desc:'폭발적으로 도약한 뒤 균형 있게 착지해요.', items:[
+    ['explosive_takeoff','폭발적인 도약','팔 스윙과 하체 신전을 연결하기'],
+    ['shock_absorption','부드러운 착지','발목·무릎·고관절을 함께 굽혀 충격 흡수하기'],
+    ['knee_alignment','무릎 정렬','착지할 때 무릎이 안쪽으로 모이지 않기'],
+    ['posture_control','2초 정지','추가 스텝 없이 2초 동안 균형 유지하기']]},
+  { key:'broad-jump-series', name:'브로드 점프 연속동작', en:'Broad Jump Series', desc:'앞으로 멀리 뛰고 리듬 있게 이어가요.', items:[
+    ['arm_swing','팔 스윙','팔을 뒤에서 앞으로 크게 휘두르며 도약하기'],
+    ['full_extension','전신 신전','발목·무릎·고관절을 쭉 펴서 앞쪽 위로 뛰기'],
+    ['stable_landing','안정된 착지','엉덩이를 뒤로 빼며 양발로 동시에 착지하기'],
+    ['rhythm_link','리듬 연결','착지 후 멈추지 않고 다음 점프로 이어가기']]},
+  { key:'lateral-line-hop', name:'좌우 라인홉', en:'Lateral Line Hop', desc:'선을 사이에 두고 좌우로 빠르게 넘어요.', items:[
+    ['light_feet','가벼운 발','앞꿈치로 가볍게 선을 넘기'],
+    ['clear_line','선 밟지 않기','매번 선을 정확히 넘어 착지하기'],
+    ['centered_trunk','몸통 중심','상체는 가운데, 다리만 좌우로 움직이기'],
+    ['steady_rhythm','일정한 리듬','처음부터 끝까지 같은 속도 유지하기']]},
+  { key:'forward-back-line-hop', name:'앞뒤 라인홉', en:'Forward-Back Line Hop', desc:'선을 사이에 두고 앞뒤로 빠르게 넘어요.', items:[
+    ['quick_rebound','빠른 반동','발이 닿자마자 바로 튀어 오르기'],
+    ['clear_line','선 밟지 않기','앞뒤 모두 선을 정확히 넘기'],
+    ['upright_trunk','상체 유지','상체가 앞뒤로 숙여지지 않게 하기'],
+    ['soft_knees','부드러운 무릎','무릎·발목을 살짝 굽혀 충격 흡수하기']]},
+];
+const progress = new Map(); // `${activity}:${item}` -> checked
+let currentActivity = (()=>{ try { return localStorage.getItem('bigjump.activity'); } catch { return null; } })();
+if (!ACTIVITIES.some(a=>a.key===currentActivity)) currentActivity = 'jump-stick';
+const activityByKey = key => ACTIVITIES.find(a=>a.key===key) || ACTIVITIES[1];
+const activityDone = activity => activity.items.every(([item])=>progress.get(`${activity.key}:${item}`));
+
+function renderActivities() {
+  const activity = activityByKey(currentActivity);
+  const card = $('.check-card');
+  let tabs = $('#activityTabs');
+  if (!tabs) { tabs = document.createElement('div'); tabs.id = 'activityTabs'; tabs.className = 'activity-tabs'; card.prepend(tabs); }
+  tabs.innerHTML = ACTIVITIES.map((a,i)=>`<button type="button" data-activity="${a.key}" class="${a.key===activity.key?'selected':''} ${activityDone(a)?'done':''}">${i+1}. ${escaped(a.name)}${activityDone(a)?' ✓':''}</button>`).join('');
+  $('.check-head strong', card).textContent = activity.name;
+  $('.check-list', card).innerHTML = activity.items.map(([item,title,hint])=>{
+    const checked = Boolean(progress.get(`${activity.key}:${item}`));
+    return `<label class="${checked?'checked':''}" data-check-key="${item}"><input type="checkbox" ${checked?'checked':''}><i></i><span><strong>${escaped(title)}</strong><small>${escaped(hint)}</small></span></label>`;
+  }).join('');
+  const count = activity.items.filter(([item])=>progress.get(`${activity.key}:${item}`)).length;
+  $('.check-count', card).textContent = `${count}/${activity.items.length}`;
+  $('.check-progress span', card).style.width = `${count/activity.items.length*100}%`;
+  // Today's movement strip: selected activity + overall achievement.
+  const done = ACTIVITIES.filter(activityDone).length;
+  $('.session-copy strong').innerHTML = `${escaped(activity.name)} <span>${escaped(activity.en)}</span>`;
+  $('.session-copy small').textContent = activity.desc;
+  $('.progress-top span').textContent = '나의 활동 달성도';
+  $('.progress-top strong').innerHTML = `${done} / ${ACTIVITIES.length} <small>활동</small>`;
+  $('.progress-track span').style.width = `${done/ACTIVITIES.length*100}%`;
+  $('.progress-labels').innerHTML = '<span>체크리스트 4개를 모두 채우면 활동 완료</span>';
+}
 async function loadChecklist() {
   if (!membership) return;
-  const { data, error } = await supabase.from('activity_progress').select('item_key,checked').eq('class_id',membership.class_id).eq('user_id',authUser.id).eq('activity_key','jump-stick');
+  const { data, error } = await supabase.from('activity_progress').select('activity_key,item_key,checked').eq('class_id',membership.class_id).eq('user_id',authUser.id);
   if (error) return;
-  const saved = new Map((data||[]).map(item=>[item.item_key,item.checked]));
-  $$('.check-list label').forEach(label=>{
-    const input=$('input',label);const key=label.dataset.checkKey;
-    if(saved.has(key))input.checked=saved.get(key);
-    label.classList.toggle('checked',input.checked);
-  });
-  updateChecklistCount();
+  progress.clear();
+  for (const row of data||[]) progress.set(`${row.activity_key}:${row.item_key}`, row.checked);
+  renderActivities();
 }
-function updateChecklistCount() {
-  const inputs=$$('.check-list input');const count=inputs.filter(input=>input.checked).length;
-  $('.check-count').textContent=`${count}/${inputs.length}`;
-  $('.check-progress span').style.width=`${inputs.length?count/inputs.length*100:0}%`;
-}
-$$('.check-list label').forEach((label,index)=>label.dataset.checkKey=['explosive_takeoff','shock_absorption','posture_control','peer_observation'][index]);
-$$('.check-list input').forEach(input=>input.addEventListener('change',async()=>{
-  const label=input.closest('label');label.classList.toggle('checked',input.checked);updateChecklistCount();
-  if(!membership)return;
-  const {error}=await supabase.from('activity_progress').upsert({class_id:membership.class_id,user_id:authUser.id,activity_key:'jump-stick',item_key:label.dataset.checkKey,checked:input.checked,updated_at:new Date().toISOString()},{onConflict:'class_id,user_id,activity_key,item_key'});
+$('.check-card').addEventListener('click', event => {
+  const tab = event.target.closest('[data-activity]');
+  if (!tab) return;
+  currentActivity = tab.dataset.activity;
+  try { localStorage.setItem('bigjump.activity', currentActivity); } catch {}
+  renderActivities();
+});
+$('.check-card').addEventListener('change', async event => {
+  const input = event.target.closest('.check-list input');
+  if (!input) return;
+  const label = input.closest('label'), activity = activityByKey(currentActivity);
+  if (!membership) { input.checked = false; toast('먼저 내 이름을 선택해 수업에 참여해주세요.'); return; }
+  progress.set(`${activity.key}:${label.dataset.checkKey}`, input.checked);
+  renderActivities();
+  const {error}=await supabase.from('activity_progress').upsert({class_id:membership.class_id,user_id:authUser.id,activity_key:activity.key,item_key:label.dataset.checkKey,checked:input.checked,updated_at:new Date().toISOString()},{onConflict:'class_id,user_id,activity_key,item_key'});
   if(error)toast(`체크 기록을 저장하지 못했습니다: ${error.message}`);
-}));
+});
+$('#exerciseInput').innerHTML = ACTIVITIES.map(a=>`<option value="${escaped(a.name)}">${escaped(a.name)}</option>`).join('');
+renderActivities();
 
 function openUpload() {
   if(!membership){joinDialog.showModal();listRoster();return;}
+  const groupSelect=$('#uploadGroupInput');
+  groupSelect.innerHTML=groups.map(group=>`<option value="${escaped(group.id)}">${escaped(group.name)}</option>`).join('')+'<option value="">모둠 없음</option>';
+  groupSelect.value=membership.group_id||'';
+  $('#exerciseInput').value=activityByKey(currentActivity).name;
   selectedFile=null;$('#galleryInput').value='';$('#cameraInput').value='';$('#fileLabel').textContent='영상을 선택하거나 바로 촬영해주세요';$('#submitUpload').disabled=true;
   uploadDialog.showModal();
 }
@@ -321,7 +400,7 @@ function renderAnalysisMetrics(analysis,{mass,height}={}) {
   setMetric('metricFlightTime',analysis.flight_time_s,'초',2);
   setMetric('metricPower',analysis.peak_power_w,'W',0);
   $('#metricHeightMethod').textContent=Number(height)>0?'체공시간 추정 · 신장 비례 비교 포함':'체공시간 기반 · 같은 높이 착지 가정';
-  $('#metricPowerMethod').textContent=analysis.peak_power_w?`${analysis.power_formula} · 참고 추정 · 오차 가능성 큼`:'체중 입력 또는 모델 적용 범위를 확인해주세요.';
+  $('#metricPowerMethod').textContent=analysis.peak_power_w?`${analysis.power_formula} · 참고 추정 · 오차 가능성 큼`:(analysis.power_note||'체중을 입력하면 추정합니다.');
   $('#metricKneeAngle').textContent=analysis.knee_extension_angle_deg==null?'—°':`${analysis.knee_extension_angle_deg}°`;
   $('#metricKneeVelocity').textContent=analysis.knee_extension_angular_velocity_deg_s==null?'—°/s':`${analysis.knee_extension_angular_velocity_deg_s}°/s`;
   $('#metricHipVelocity').textContent=analysis.hip_extension_angular_velocity_deg_s==null?'—°/s':`${analysis.hip_extension_angular_velocity_deg_s}°/s`;
@@ -397,6 +476,7 @@ $('#submitUpload').addEventListener('click',async()=>{
     const mass=Number($('#weightInput').value)||null;
     const height=Number($('#heightInput').value)||null;
     const exercise=$('#exerciseInput').value;
+    const chosenGroup=$('#uploadGroupInput').value||null;
     const analysis=await runPoseAnalysis(localVideo,{mass,height,exercise});
     $('#analysisQuality').textContent='저장·공유 중';
     const ext=(file.name.split('.').pop()||'mp4').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,6)||'mp4';
@@ -404,11 +484,17 @@ $('#submitUpload').addEventListener('click',async()=>{
     const {error:uploadError}=await supabase.storage.from(videoBucket).upload(path,file,{contentType:file.type||'video/mp4',upsert:false,cacheControl:'3600'});
     if(uploadError)throw uploadError;
     const record={...analysis};delete record.samples;
-    const {data,error}=await supabase.from('videos').insert({
-      class_id:membership.class_id,group_id:membership.group_id,user_id:authUser.id,display_name:membership.display_name,
+    const videoRow={
+      class_id:membership.class_id,group_id:chosenGroup,user_id:authUser.id,display_name:membership.display_name,
       exercise,duration_seconds:Number(localVideo.duration.toFixed(3)),body_mass_kg:mass,height_cm:height,
       note:$('#noteInput').value.trim(),storage_path:path,analysis:record,
-    }).select('id').single();
+    };
+    let {data,error}=await supabase.from('videos').insert(videoRow).select('id').single();
+    // Until the group-tag SQL is applied, the database only accepts the student's own group.
+    if(error&&chosenGroup!==membership.group_id&&/row-level security/i.test(error.message)){
+      ({data,error}=await supabase.from('videos').insert({...videoRow,group_id:membership.group_id}).select('id').single());
+      if(!error)toast('선택한 모둠으로 저장하지 못해 내 모둠으로 올렸어요.');
+    }
     if(error){await supabase.storage.from(videoBucket).remove([path]);throw error;}
     selectedVideo={id:data.id,display_name:membership.display_name,exercise,analysis:record,storage_path:path,user_id:authUser.id,body_mass_kg:mass,height_cm:height};
     toast('분석을 마치고 수업 담벼락에 공유했습니다.');
@@ -499,9 +585,8 @@ async function deleteVideo(id) {
 }
 
 $('#filterButton').addEventListener('click',()=>{
-  const active=$('#filterButton').dataset.open==='true';$('#filterButton').dataset.open=String(!active);
-  if(active){$('#filterButton').dataset.group='';$('#filterButton').innerHTML='모든 모둠 <span>⌄</span>';$$('.post-card').forEach(card=>card.classList.remove('hidden-by-filter'));return;}
-  if(groups.length){const next=groups.find(group=>group.id!==$('#filterButton').dataset.group)||groups[0];$('#filterButton').dataset.group=next.id;$('#filterButton').innerHTML=`${escaped(next.name)} <span>⌄</span>`;$$('.post-card').forEach(card=>card.classList.toggle('hidden-by-filter',card.dataset.group!==next.id));}
+  const ids=['',...groups.map(group=>group.id)];
+  applyGroupFilter(ids[(ids.indexOf($('#filterButton').dataset.group||'')+1)%ids.length]);
 });
 $$('.view-toggle button').forEach((button,index)=>button.addEventListener('click',()=>{
   $$('.view-toggle button').forEach(item=>item.classList.remove('selected'));button.classList.add('selected');$('#feedGrid').classList.toggle('list-view',index===1);

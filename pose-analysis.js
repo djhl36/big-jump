@@ -186,8 +186,11 @@ export function computeJumpMetrics(frames, { fps, aspect, bodyMassKg, heightCm, 
   const lean=Math.abs(lms[landingIndex]?trunkAngle(lms[landingIndex],aspect):NaN);
 
   const mass=Number(bodyMassKg);
-  const isSquatJump=String(exercise||'').toLowerCase().includes('스쿼트');
-  const powerW=mass>0 ? (isSquatJump ? 60.7*jumpHeightCm+45.3*mass-2055 : 51.9*jumpHeightCm+48.9*mass-2007) : null;
+  const exerciseName=String(exercise||'');
+  const isSquatJump=exerciseName.includes('스쿼트');
+  // Sayers equations were built for single vertical jumps (CMJ/SJ); other drills get no power estimate.
+  const powerApplies=isSquatJump||exerciseName.includes('점프 앤 스틱');
+  const powerW=mass>0&&powerApplies ? (isSquatJump ? 60.7*jumpHeightCm+45.3*mass-2055 : 51.9*jumpHeightCm+48.9*mass-2007) : null;
   const powerValid=powerW!==null&&powerW>0;
   // Nose height is ~92% of standing height.
   const visualJumpCm=Number(heightCm)>0&&Number.isFinite(jump.peakY)?Math.max(0,(jump.floor-jump.peakY)/scale*Number(heightCm)*0.92):null;
@@ -202,6 +205,7 @@ export function computeJumpMetrics(frames, { fps, aspect, bodyMassKg, heightCm, 
     peak_power_w:powerValid?Math.round(powerW):null,
     power_formula:isSquatJump?'Sayers SJ (60.7×height_cm + 45.3×mass_kg − 2055)':'Sayers CMJ (51.9×height_cm + 48.9×mass_kg − 2007)',
     power_standard_error_w:isSquatJump?373:562,
+    power_note:!powerApplies?'파워 추정식은 제자리 수직 점프(점프 앤 스틱)에만 적용해요.':(mass>0?null:'체중을 입력하면 추정합니다.'),
     knee_extension_angle_deg:round(maxKnee,1),
     knee_min_angle_deg:round(minKnee,1),
     knee_extension_angular_velocity_deg_s:round(kneeVel,1),
