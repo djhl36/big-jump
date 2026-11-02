@@ -281,27 +281,27 @@ $$('.check-list input').forEach(input=>input.addEventListener('change',async()=>
 
 function openUpload() {
   if(!membership){joinDialog.showModal();listRoster();return;}
-  selectedFile=null;$('#dialogFileInput').value='';$('#fileLabel').innerHTML='영상을 끌어오거나 <u>파일 선택</u>';$('#submitUpload').disabled=true;
+  selectedFile=null;$('#galleryInput').value='';$('#cameraInput').value='';$('#fileLabel').textContent='영상을 선택하거나 바로 촬영해주세요';$('#submitUpload').disabled=true;
   uploadDialog.showModal();
 }
 $('#uploadButton').addEventListener('click',openUpload);
 $('#addCard').addEventListener('click',openUpload);
 $('#closeUpload').addEventListener('click',()=>uploadDialog.close());
 $('#cancelUpload').addEventListener('click',()=>uploadDialog.close());
-$('#dropZone').addEventListener('click',event=>{if(!event.target.closest('input'))$('#dialogFileInput').click();});
-$('#dropZone').addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();$('#dialogFileInput').click();}});
-$('#dialogFileInput').addEventListener('change',event=>{
-  const file=event.target.files[0];if(!file)return;
-  if(!file.type.startsWith('video/')){toast('영상 파일을 선택해주세요.');return;}
-  if(file.size>100*1024*1024){toast('영상은 100MB 이하로 올려주세요.');return;}
-  selectedFile=file;$('#fileLabel').textContent=`${file.name} · ${fileSize(file.size)}`;$('#submitUpload').disabled=false;
-});
+// Some Android galleries hand over files with an empty MIME type, so also accept by extension.
+function isVideoFile(file) { return file.type.startsWith('video/') || (!file.type && /\.(mp4|mov|m4v|3gp|webm)$/i.test(file.name)); }
+function chooseVideo(file) {
+  if(!file)return;
+  if(!isVideoFile(file)){toast('영상 파일을 선택해주세요.');return;}
+  if(file.size>100*1024*1024){toast('영상은 100MB 이하로 올려주세요. 짧게 잘라서 올려주세요.');return;}
+  selectedFile=file;$('#fileLabel').textContent=`✓ ${file.name} · ${fileSize(file.size)}`;$('#submitUpload').disabled=false;
+}
+for(const id of ['galleryInput','cameraInput'])$(`#${id}`).addEventListener('change',event=>chooseVideo(event.target.files[0]));
+$$('.pick-button').forEach(label=>label.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();$(`#${label.htmlFor}`).click();}}));
 for(const eventName of ['dragenter','dragover'])$('#dropZone').addEventListener(eventName,event=>{event.preventDefault();$('#dropZone').classList.add('dragover');});
 for(const eventName of ['dragleave','drop'])$('#dropZone').addEventListener(eventName,event=>{event.preventDefault();$('#dropZone').classList.remove('dragover');});
 $('#dropZone').addEventListener('drop',event=>{
-  const file=event.dataTransfer.files[0];if(!file)return;
-  if(!file.type.startsWith('video/')||file.size>100*1024*1024){toast('MP4, MOV 영상 파일(최대 100MB)을 선택해주세요.');return;}
-  selectedFile=file;$('#fileLabel').textContent=`${file.name} · ${fileSize(file.size)}`;$('#submitUpload').disabled=false;
+  chooseVideo(event.dataTransfer.files[0]);
 });
 
 function resetAnalysis() {
@@ -571,6 +571,7 @@ $('#saveRosterButton').addEventListener('click',async()=>{
 teacherDialog.addEventListener('close',()=>$('#teacherPin').value='');
 
 for(const dialog of [analysisDialog,feedbackDialog,uploadDialog,joinDialog,teacherDialog])dialog.addEventListener('click',event=>{
+  if(event.target!==dialog||!event.isTrusted)return;
   const rect=dialog.getBoundingClientRect();
   if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)dialog.close();
 });

@@ -6,3 +6,4 @@ dist/
 supabase/.env
 supabase/.branches/
 .codex/
+.claude/
