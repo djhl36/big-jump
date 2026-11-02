@@ -1,0 +1,7 @@
+project_id = "tduggsraexjrjsiarzit"
+
+[functions.join-class]
+verify_jwt = true
+
+[functions.teacher-admin]
+verify_jwt = true
