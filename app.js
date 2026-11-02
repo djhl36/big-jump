@@ -10,7 +10,6 @@ const supabase = hasConfig ? createClient(config.supabaseUrl, config.supabaseKey
 }) : null;
 const videoBucket = config.videoBucket || 'class-videos';
 const analysisDialog = $('#analysisDialog');
-const feedbackDialog = $('#feedbackDialog');
 const uploadDialog = $('#uploadDialog');
 const joinDialog = $('#joinDialog');
 const teacherDialog = $('#teacherDialog');
@@ -26,8 +25,6 @@ let selectedVideo = null;
 let currentAnalysis = null;
 let currentSamples = [];
 let analysisWorker = null;
-let activeFeedbackVideo = null;
-let feedbackKind = 'observation';
 let showSkeleton = true;
 let playbackSpeed = 0.5;
 let videoRows = [];
@@ -80,6 +77,19 @@ async function ensureAnonymousSession() {
   return data.user;
 }
 
+const isAdminMode = new URLSearchParams(location.search).has('admin');
+async function openAdmin() {
+  joinDialog.close();
+  teacherTab('roster');
+  teacherDialog.showModal();
+  if ($('#teacherClassCode').textContent === '—') {
+    try {
+      const data = await invoke('join-class', { action: 'list-roster' });
+      $('#teacherClassCode').textContent = data.class_code;
+    } catch (error) { showTeacherError(error.message); }
+  }
+  $('#teacherPin').focus();
+}
 async function startApp() {
   if (!supabase) {
     setConnection('연결 설정 필요');
@@ -96,6 +106,7 @@ async function startApp() {
       .eq('user_id', authUser.id).order('joined_at', { ascending: false }).limit(1);
     if (error) throw error;
     const data = rows?.[0];
+    if (isAdminMode) { if (data) await loadClassroom(data); openAdmin(); return; }
     if (data) await loadClassroom(data);
     else {
       joinDialog.showModal();
@@ -130,10 +141,17 @@ async function loadClassroom(member) {
   $('.meta-count').textContent=`${(participants||[]).length}명 참여`;
   joinDialog.close();
   renderGroups();
-  await Promise.all([loadFeed(), loadChecklist()]);
+  updateTopbarMe();
+  await Promise.all([loadFeed(), loadChecklist(), loadGroupMembers()]);
   subscribeToClass();
 }
 
+function updateTopbarMe() {
+  if (!membership) { $('#topbarMe').textContent = ''; return; }
+  if (membership.role === 'teacher') { $('#topbarMe').textContent = '교사'; return; }
+  const group = groups.find(item => item.id === membership.group_id);
+  $('#topbarMe').innerHTML = `<span>${escaped(group?.name || '모둠 미정')}</span> / <strong>${escaped(membership.display_name)}</strong>`;
+}
 function subscribeToClass() {
   if(realtimeChannel)supabase.removeChannel(realtimeChannel);
   realtimeChannel=supabase.channel(`big-jump-${membership.class_id}`)
@@ -141,9 +159,13 @@ function subscribeToClass() {
     .on('postgres_changes',{event:'*',schema:'public',table:'feedback'},scheduleFeedRefresh)
     .on('postgres_changes',{event:'*',schema:'public',table:'groups',filter:`class_id=eq.${membership.class_id}`},async()=>{
       const {data}=await supabase.from('groups').select('id,name,sort_order').eq('class_id',membership.class_id).order('sort_order');
-      if(data){groups=data;renderGroups();renderFeed();}
+      if(data){groups=data;renderGroups();renderFeed();updateTopbarMe();}
     })
-    .on('postgres_changes',{event:'*',schema:'public',table:'class_members',filter:`class_id=eq.${membership.class_id}`},scheduleFeedRefresh)
+    .on('postgres_changes',{event:'*',schema:'public',table:'class_members',filter:`class_id=eq.${membership.class_id}`},()=>{scheduleFeedRefresh();loadGroupMembers();})
+    .on('postgres_changes',{event:'*',schema:'public',table:'activity_progress',filter:`class_id=eq.${membership.class_id}`},payload=>{
+      const row=payload.new;if(!row?.user_id)return;
+      progress.set(progressKey(row.user_id,row.activity_key,row.item_key),row.checked);renderActivities();
+    })
     .subscribe(status=>{if(status==='SUBSCRIBED')setConnection(membership.role==='teacher'?'교사 · 실시간 연결':'수업 참여 중',true);});
 }
 function scheduleFeedRefresh() {
@@ -258,7 +280,8 @@ function renderFeed() {
   }
   const add=document.createElement('button');add.className='add-card';add.id='addCard';add.innerHTML='<span class="add-ring">＋</span><strong>내 동작 영상 올리기</strong><span>영상을 올리고 친구들과 관찰 내용을 나눠요.</span><small>MP4 · MOV · 최대 100MB</small>';add.addEventListener('click',openUpload);feed.append(add);
   $$('[data-open-video]',feed).forEach(button=>button.addEventListener('click',()=>openSavedVideo(button.dataset.openVideo)));
-  $$('[data-comments]',feed).forEach(button=>button.addEventListener('click',()=>openFeedback(videoRows.find(row=>row.id===button.dataset.comments))));
+  $$('[data-comments]',feed).forEach(button=>button.addEventListener('click',async()=>{const open=openSavedVideo(button.dataset.comments);setTimeout(()=>$('#commentThread').scrollIntoView({behavior:'smooth',block:'start'}),300);await open;}));
+  if(analysisDialog.open)renderComments();
   $$('[data-delete-video]',feed).forEach(button=>button.addEventListener('click',()=>deleteVideo(button.dataset.deleteVideo)));
   applyGroupFilter($('#filterButton').dataset.group||'');
 }
@@ -297,11 +320,30 @@ const ACTIVITIES = [
     ['upright_trunk','상체 유지','상체가 앞뒤로 숙여지지 않게 하기'],
     ['soft_knees','부드러운 무릎','무릎·발목을 살짝 굽혀 충격 흡수하기']]},
 ];
-const progress = new Map(); // `${activity}:${item}` -> checked
+const progress = new Map(); // `${userId}:${activity}:${item}` -> checked
+const progressKey = (user, activity, item) => `${user}:${activity}:${item}`;
+let groupMembers = []; // students in my 모둠, in a fixed order for the role rotation
+let checkTarget = null; // whose checklist is open
 let currentActivity = (()=>{ try { return localStorage.getItem('bigjump.activity'); } catch { return null; } })();
 if (!ACTIVITIES.some(a=>a.key===currentActivity)) currentActivity = 'jump-stick';
 const activityByKey = key => ACTIVITIES.find(a=>a.key===key) || ACTIVITIES[1];
-const activityDone = activity => activity.items.every(([item])=>progress.get(`${activity.key}:${item}`));
+const activityDone = (activity, user = authUser?.id) => activity.items.every(([item])=>progress.get(progressKey(user,activity.key,item)));
+// Rotation inside a 모둠: while one member exercises, the next films and the one after gives feedback and checks.
+function rotationFor(userId) {
+  const n = groupMembers.length, i = groupMembers.findIndex(m=>m.user_id===userId);
+  if (n < 2 || i < 0) return null;
+  return { film: groupMembers[(i+1)%n], feedback: groupMembers[(i+(n>=3?2:1))%n] };
+}
+async function loadGroupMembers() {
+  if (!membership) return;
+  const { data, error } = await supabase.from('class_members').select('user_id,display_name,group_id,role').eq('class_id', membership.class_id);
+  if (error) return;
+  const me = (data||[]).find(m=>m.user_id===authUser.id);
+  if (me && me.group_id !== membership.group_id) { membership.group_id = me.group_id; updateTopbarMe(); }
+  groupMembers = membership.group_id ? (data||[]).filter(m=>m.role!=='teacher'&&m.group_id===membership.group_id).sort((a,b)=>a.display_name.localeCompare(b.display_name,'ko')) : [];
+  if (!groupMembers.some(m=>m.user_id===checkTarget)) checkTarget = authUser.id;
+  renderActivities();
+}
 
 function renderActivities() {
   const activity = activityByKey(currentActivity);
@@ -309,12 +351,22 @@ function renderActivities() {
   let tabs = $('#activityTabs');
   if (!tabs) { tabs = document.createElement('div'); tabs.id = 'activityTabs'; tabs.className = 'activity-tabs'; card.prepend(tabs); }
   tabs.innerHTML = ACTIVITIES.map((a,i)=>`<button type="button" data-activity="${a.key}" class="${a.key===activity.key?'selected':''} ${activityDone(a)?'done':''}">${i+1}. ${escaped(a.name)}${activityDone(a)?' ✓':''}</button>`).join('');
+  let who = $('#checkWho');
+  if (!who) { who = document.createElement('div'); who.id = 'checkWho'; who.className = 'check-who'; tabs.after(who); }
+  const me = { user_id: authUser?.id, display_name: membership?.display_name || '나' };
+  const target = groupMembers.find(m=>m.user_id===checkTarget) || me;
+  const roles = rotationFor(target.user_id);
+  who.innerHTML = groupMembers.length > 1
+    ? `<div class="check-who-label">운동하는 모둠원을 고르고 서로 체크해줘요</div><div class="member-chips">${groupMembers.map(m=>`<button type="button" data-check-target="${escaped(m.user_id)}" class="${m.user_id===target.user_id?'selected':''}">${escaped(m.display_name)}${m.user_id===me.user_id?' (나)':''}</button>`).join('')}</div>`
+      + (roles ? `<div class="role-line"><span>🏃 운동 <b>${escaped(target.display_name)}</b></span><span>🎥 촬영 <b>${escaped(roles.film.display_name)}</b></span><span>💬 피드백·체크 <b>${escaped(roles.feedback.display_name)}</b></span></div>` : '')
+    : (membership ? '<div class="check-who-label">같은 모둠 친구가 참여하면 서로 체크해줄 수 있어요.</div>' : '');
   $('.check-head strong', card).textContent = activity.name;
+  $('.check-head small', card).textContent = target.user_id === me.user_id ? '나의 움직임 체크리스트' : `${target.display_name}의 움직임 체크리스트`;
   $('.check-list', card).innerHTML = activity.items.map(([item,title,hint])=>{
-    const checked = Boolean(progress.get(`${activity.key}:${item}`));
+    const checked = Boolean(progress.get(progressKey(target.user_id,activity.key,item)));
     return `<label class="${checked?'checked':''}" data-check-key="${item}"><input type="checkbox" ${checked?'checked':''}><i></i><span><strong>${escaped(title)}</strong><small>${escaped(hint)}</small></span></label>`;
   }).join('');
-  const count = activity.items.filter(([item])=>progress.get(`${activity.key}:${item}`)).length;
+  const count = activity.items.filter(([item])=>progress.get(progressKey(target.user_id,activity.key,item))).length;
   $('.check-count', card).textContent = `${count}/${activity.items.length}`;
   $('.check-progress span', card).style.width = `${count/activity.items.length*100}%`;
   // Today's movement strip: selected activity + overall achievement.
@@ -328,13 +380,15 @@ function renderActivities() {
 }
 async function loadChecklist() {
   if (!membership) return;
-  const { data, error } = await supabase.from('activity_progress').select('activity_key,item_key,checked').eq('class_id',membership.class_id).eq('user_id',authUser.id);
+  const { data, error } = await supabase.from('activity_progress').select('user_id,activity_key,item_key,checked').eq('class_id',membership.class_id);
   if (error) return;
   progress.clear();
-  for (const row of data||[]) progress.set(`${row.activity_key}:${row.item_key}`, row.checked);
+  for (const row of data||[]) progress.set(progressKey(row.user_id,row.activity_key,row.item_key), row.checked);
   renderActivities();
 }
 $('.check-card').addEventListener('click', event => {
+  const member = event.target.closest('[data-check-target]');
+  if (member) { checkTarget = member.dataset.checkTarget; renderActivities(); return; }
   const tab = event.target.closest('[data-activity]');
   if (!tab) return;
   currentActivity = tab.dataset.activity;
@@ -346,10 +400,14 @@ $('.check-card').addEventListener('change', async event => {
   if (!input) return;
   const label = input.closest('label'), activity = activityByKey(currentActivity);
   if (!membership) { input.checked = false; toast('먼저 내 이름을 선택해 수업에 참여해주세요.'); return; }
-  progress.set(`${activity.key}:${label.dataset.checkKey}`, input.checked);
+  const target = checkTarget || authUser.id, key = progressKey(target, activity.key, label.dataset.checkKey);
+  progress.set(key, input.checked);
   renderActivities();
-  const {error}=await supabase.from('activity_progress').upsert({class_id:membership.class_id,user_id:authUser.id,activity_key:activity.key,item_key:label.dataset.checkKey,checked:input.checked,updated_at:new Date().toISOString()},{onConflict:'class_id,user_id,activity_key,item_key'});
-  if(error)toast(`체크 기록을 저장하지 못했습니다: ${error.message}`);
+  const {error}=await supabase.from('activity_progress').upsert({class_id:membership.class_id,user_id:target,activity_key:activity.key,item_key:label.dataset.checkKey,checked:input.checked,updated_at:new Date().toISOString()},{onConflict:'class_id,user_id,activity_key,item_key'});
+  if(error){
+    progress.set(key, !input.checked); renderActivities();
+    toast(target===authUser.id ? `체크 기록을 저장하지 못했습니다: ${error.message}` : '모둠원 체크는 선생님이 서버 설정을 마친 뒤 사용할 수 있어요.');
+  }
 });
 $('#exerciseInput').innerHTML = ACTIVITIES.map(a=>`<option value="${escaped(a.name)}">${escaped(a.name)}</option>`).join('');
 renderActivities();
@@ -386,7 +444,7 @@ $('#dropZone').addEventListener('drop',event=>{
 function resetAnalysis() {
   localVideo.pause();clearInterval(analysisWorker);analysisWorker=null;
   localVideo.onloadedmetadata=null;localVideo.ontimeupdate=null;localVideo.onplay=null;localVideo.onpause=null;
-  currentAnalysis=null;currentSamples=[];selectedVideo=null;
+  currentAnalysis=null;currentSamples=[];selectedVideo=null;renderComments();
   drawPose(poseCanvas,localVideo,null,false);
   $('#analysisProgress').classList.add('hidden-by-filter');
   $('#analysisIdle').classList.remove('hidden-by-filter');
@@ -496,7 +554,8 @@ $('#submitUpload').addEventListener('click',async()=>{
       if(!error)toast('선택한 모둠으로 저장하지 못해 내 모둠으로 올렸어요.');
     }
     if(error){await supabase.storage.from(videoBucket).remove([path]);throw error;}
-    selectedVideo={id:data.id,display_name:membership.display_name,exercise,analysis:record,storage_path:path,user_id:authUser.id,body_mass_kg:mass,height_cm:height};
+    selectedVideo={id:data.id,display_name:membership.display_name,exercise,analysis:record,storage_path:path,user_id:authUser.id,body_mass_kg:mass,height_cm:height,feedback:[]};
+    renderComments();
     toast('분석을 마치고 수업 담벼락에 공유했습니다.');
     await loadFeed();
     $('#analysisQuality').textContent='저장 완료 · 참고값';
@@ -509,7 +568,7 @@ $('#submitUpload').addEventListener('click',async()=>{
 
 async function openSavedVideo(id) {
   const row=videoRows.find(item=>item.id===id);if(!row)return;
-  resetAnalysis();selectedVideo=row;currentAnalysis=row.analysis||null;
+  resetAnalysis();selectedVideo=row;currentAnalysis=row.analysis||null;renderComments();
   $('#analysisName').textContent=row.display_name;renderAnalysisMetrics(currentAnalysis,{mass:row.body_mass_kg,height:row.height_cm});
   localVideo.src=row.signedUrl;localVideo.classList.remove('hidden-by-filter');connectVideoControls(localVideo);analysisDialog.showModal();
   try {
@@ -543,28 +602,38 @@ analysisDialog.addEventListener('close',()=>{
   drawPose(poseCanvas,localVideo,null,false);
 });
 
-function openFeedback(row) {
-  if(!row||!membership)return;
-  activeFeedbackVideo=row;feedbackKind='observation';
-  $('#feedbackTarget').textContent=row.display_name;$('#feedbackText').value='';
-  analysisDialog.close();feedbackDialog.showModal();
+let commentKind = 'observation';
+function renderComments() {
+  const row = selectedVideo && (videoRows.find(item=>item.id===selectedVideo.id) || selectedVideo);
+  $('#commentThread').classList.toggle('hidden-by-filter', !row?.id);
+  if (!row?.id) return;
+  const list = [...(row.feedback||[])].sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+  const label = {strength:'👏 잘한 점',next_try:'💡 다음 시도',balance:'⚖️ 균형 관찰',observation:'💬'};
+  $('#commentCount').textContent = `${list.length}개`;
+  $('#commentList').innerHTML = list.length
+    ? list.map(c=>`<div class="comment"><div class="mini-avatar">${escaped(c.display_name.slice(0,1))}</div><div><strong>${escaped(c.display_name)}</strong> <em>${label[c.kind]||''}</em><p>${escaped(c.content)}</p></div></div>`).join('')
+    : '<p class="comment-empty">아직 피드백이 없어요.</p>';
+  const mine = row.user_id === authUser?.id;
+  $('#commentCompose').classList.toggle('hidden-by-filter', mine || !membership);
+  $('#commentOwnNote').classList.toggle('hidden-by-filter', !mine);
 }
-$('#feedbackButton').addEventListener('click',()=>openFeedback(selectedVideo));
-$('#closeFeedback').addEventListener('click',()=>feedbackDialog.close());
-$('#cancelFeedback').addEventListener('click',()=>feedbackDialog.close());
-$$('.feedback-prompts button').forEach(button=>button.addEventListener('click',()=>{
-  feedbackKind=button.textContent.includes('잘한')?'strength':button.textContent.includes('다음')?'next_try':button.textContent.includes('균형')?'balance':'observation';
-  const prefix={strength:'잘한 점: ',next_try:'다음 시도: ',balance:'균형 관찰: ',observation:''}[feedbackKind];
-  if(!$('#feedbackText').value)$('#feedbackText').value=prefix;
-  $('#feedbackText').focus();
+$$('#commentCompose [data-kind]').forEach(button=>button.addEventListener('click',()=>{
+  commentKind = button.dataset.kind;
+  $$('#commentCompose [data-kind]').forEach(item=>item.classList.toggle('selected', item===button));
+  $('#commentInput').focus();
 }));
-$('#sendFeedback').addEventListener('click',async()=>{
-  const content=$('#feedbackText').value.trim();if(!content||!activeFeedbackVideo)return;
-  const button=$('#sendFeedback');button.disabled=true;
-  const {error}=await supabase.from('feedback').insert({video_id:activeFeedbackVideo.id,user_id:authUser.id,display_name:membership.display_name,kind:feedbackKind,content});
+$('#sendComment').addEventListener('click',async()=>{
+  const content=$('#commentInput').value.trim();
+  if(!content||!selectedVideo?.id||!membership)return;
+  const button=$('#sendComment');button.disabled=true;
+  const {data,error}=await supabase.from('feedback').insert({video_id:selectedVideo.id,user_id:authUser.id,display_name:membership.display_name,kind:commentKind,content}).select('id,display_name,kind,content,created_at').single();
   button.disabled=false;
   if(error){toast(`피드백 저장 실패: ${error.message}`);return;}
-  feedbackDialog.close();toast('관찰 피드백을 담벼락에 남겼어요.');await loadFeed();
+  const row=videoRows.find(item=>item.id===selectedVideo.id);
+  if(row){row.feedback=[...(row.feedback||[]),data];}
+  $('#commentInput').value='';commentKind='observation';
+  $$('#commentCompose [data-kind]').forEach(item=>item.classList.remove('selected'));
+  renderComments();renderFeed();toast('피드백을 남겼어요.');
 });
 
 $('#downloadButton').addEventListener('click',()=>{
@@ -629,33 +698,50 @@ $('#createClassButton').addEventListener('click',async()=>{
     await loadClassroom(member);teacherDialog.close();toast('수업, 모둠, 학생 명단을 만들었습니다.');
   } catch(error){showTeacherError(error.message);}
 });
-$('#teacherLoad').addEventListener('click',async()=>{
+let rosterState = []; // [{name, group, joined}]
+const editorGroups = () => $('#editGroupNamesInput').value.split(',').map(value=>value.trim()).filter(Boolean);
+function renderRosterEditor() {
+  const names = editorGroups();
+  $('#rosterEditor').innerHTML = rosterState.length ? rosterState.map((row,index)=>`<div class="roster-row"><span>${escaped(row.name)} <small class="${row.joined?'joined':''}">${row.joined?'참여 중':'미참여'}</small></span><select data-roster-index="${index}">${['',...names].map(name=>`<option value="${escaped(name)}" ${name===row.group?'selected':''}>${name?escaped(name):'모둠 없음'}</option>`).join('')}</select></div>`).join('')
+    : '<p class="roster-empty">아직 학생이 없어요. 아래에 추가해주세요.</p>';
+}
+$('#rosterEditor').addEventListener('change',event=>{const select=event.target.closest('[data-roster-index]');if(select)rosterState[Number(select.dataset.rosterIndex)].group=select.value;});
+$('#editGroupNamesInput').addEventListener('input',renderRosterEditor);
+async function teacherLoadClass() {
   showTeacherError('');
-  const code=($('#teacherClassCode').textContent==='—'?$('#joinCode').value:$('#teacherClassCode').textContent).trim().toUpperCase();
-  if(!code){showTeacherError('수업 코드가 필요합니다. 먼저 수업을 만들거나 코드를 입력해주세요.');return;}
+  let code=($('#teacherClassCode').textContent==='—'?$('#joinCode').value:$('#teacherClassCode').textContent).trim().toUpperCase();
+  if(!code){try{code=(await invoke('join-class',{action:'list-roster'})).class_code;}catch{}}
+  if(!code){showTeacherError('수업이 없습니다. 먼저 ‘수업 만들기’에서 수업을 만들어주세요.');return;}
   try {
     const data=await teacherRequest({action:'load-class',class_code:code});
     $('#teacherClassCode').textContent=data.classroom.join_code;$('#editGroupNamesInput').value=data.groups.map(group=>group.name).join(', ');
-    $('#editRosterInput').value=data.roster.map(row=>`${row.student_name}, ${row.groups?.name||''}`).join('\n');teacherTab('roster');
+    rosterState=data.roster.map(row=>({name:row.student_name,group:row.groups?.name||'',joined:Boolean(row.auth_user_id)}));
+    renderRosterEditor();teacherTab('roster');
     toast(`${data.roster.length}명의 학생 명단을 불러왔어요.`);
   } catch(error){showTeacherError(error.message);}
-});
+}
+$('#teacherLoad').addEventListener('click',teacherLoadClass);
+$('#teacherPin').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();teacherLoadClass();}});
 $('#saveRosterButton').addEventListener('click',async()=>{
   showTeacherError('');
   const code=$('#teacherClassCode').textContent.trim();
-  const groups=$('#editGroupNamesInput').value.split(',').map(value=>value.trim()).filter(Boolean);
-  const students=$('#editRosterInput').value.split(/\r?\n/).map(line=>{
+  if(code==='—'){showTeacherError('먼저 ‘수업 불러오기’를 눌러주세요.');return;}
+  const groups=editorGroups();
+  const added=$('#newStudentsInput').value.split(/\r?\n/).map(line=>{
     const [name,...rest]=line.split(',');return {name:name.trim(),group:rest.join(',').trim()};
-  }).filter(row=>row.name);
+  }).filter(row=>row.name&&!rosterState.some(item=>item.name===row.name));
+  const students=[...rosterState.map(row=>({name:row.name,group:row.group})),...added];
   try {
     const data=await teacherRequest({action:'save-roster',class_code:code,groups,students});
-    toast(`${data.student_count}명의 학생 배정을 저장했어요.`);
-    await loadClassroom(membership);
+    $('#newStudentsInput').value='';
+    toast(`${data.student_count}명의 모둠 배정을 저장했어요.`);
+    await teacherLoadClass();
+    if(membership)await loadClassroom(membership);
   } catch(error){showTeacherError(error.message);}
 });
 teacherDialog.addEventListener('close',()=>$('#teacherPin').value='');
 
-for(const dialog of [analysisDialog,feedbackDialog,uploadDialog,joinDialog,teacherDialog])dialog.addEventListener('click',event=>{
+for(const dialog of [analysisDialog,uploadDialog,joinDialog,teacherDialog])dialog.addEventListener('click',event=>{
   if(event.target!==dialog||!event.isTrusted)return;
   const rect=dialog.getBoundingClientRect();
   if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)dialog.close();
