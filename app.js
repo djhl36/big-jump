@@ -97,9 +97,8 @@ async function startApp() {
     if (error) throw error;
     if (data) await loadClassroom(data);
     else {
-      const savedCode = localStorage.getItem('bigjump.joinCode');
-      if (savedCode) $('#joinCode').value = savedCode;
       joinDialog.showModal();
+      listRoster();
     }
   } catch (error) {
     setConnection('서버 설정 확인 필요');
@@ -154,11 +153,13 @@ function scheduleFeedRefresh() {
 async function listRoster() {
   showJoinError('');
   $('#studentNameSelect').innerHTML = '<option value="">명단 확인 중…</option>';
-  const code = $('#joinCode').value.trim().toUpperCase();
-  if (!code) { $('#studentNameSelect').innerHTML = '<option value="">수업 코드를 먼저 입력해주세요</option>'; return; }
+  $('#joinClassName').textContent = '';
   try {
-    const data = await invoke('join-class', { action: 'list-roster', class_code: code });
-    classInfo = { id: data.class_id, name: data.class_name, join_code: code };
+    // No class code: the server returns the most recently created class.
+    const data = await invoke('join-class', { action: 'list-roster' });
+    $('#joinCode').value = data.class_code;
+    $('#joinClassName').textContent = data.class_name;
+    classInfo = { id: data.class_id, name: data.class_name, join_code: data.class_code };
     const options = ['<option value="">이름을 선택해주세요</option>', ...data.roster.map(row => `<option value="${escaped(row.id)}" ${row.selected ? 'selected' : ''}>${escaped(row.name)} · ${escaped(row.group)}</option>`)];
     $('#studentNameSelect').innerHTML = options.join('');
     if (!data.roster.length) showJoinError('명단이 없거나 이미 모든 이름이 연결되어 있습니다. 선생님께 확인해주세요.');
@@ -167,15 +168,13 @@ async function listRoster() {
     showJoinError(error.message);
   }
 }
-$('#joinCode').addEventListener('change', listRoster);
-$('#joinCode').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); listRoster(); } });
 $('#joinSubmit').addEventListener('click', async () => {
   const code = $('#joinCode').value.trim().toUpperCase();
   const rosterId = $('#studentNameSelect').value;
-  if (!code || !rosterId) { showJoinError('수업 코드와 이름을 선택해주세요.'); return; }
+  if (!code) { listRoster(); return; }
+  if (!rosterId) { showJoinError('내 이름을 선택해주세요.'); return; }
   $('#joinSubmit').disabled = true;
   try {
-    localStorage.setItem('bigjump.joinCode', code);
     const data = await invoke('join-class', { action: 'join', class_code: code, roster_id: rosterId });
     await loadClassroom(data.membership);
     toast(`${data.class_name}에 참여했습니다.`);
@@ -281,7 +280,7 @@ $$('.check-list input').forEach(input=>input.addEventListener('change',async()=>
 }));
 
 function openUpload() {
-  if(!membership){joinDialog.showModal();return;}
+  if(!membership){joinDialog.showModal();listRoster();return;}
   selectedFile=null;$('#dialogFileInput').value='';$('#fileLabel').innerHTML='영상을 끌어오거나 <u>파일 선택</u>';$('#submitUpload').disabled=true;
   uploadDialog.showModal();
 }
@@ -325,6 +324,7 @@ function renderAnalysisMetrics(analysis,{mass,height}={}) {
   $('#metricPowerMethod').textContent=analysis.peak_power_w?`${analysis.power_formula} · 참고 추정 · 오차 가능성 큼`:'체중 입력 또는 모델 적용 범위를 확인해주세요.';
   $('#metricKneeAngle').textContent=analysis.knee_extension_angle_deg==null?'—°':`${analysis.knee_extension_angle_deg}°`;
   $('#metricKneeVelocity').textContent=analysis.knee_extension_angular_velocity_deg_s==null?'—°/s':`${analysis.knee_extension_angular_velocity_deg_s}°/s`;
+  $('#metricHipVelocity').textContent=analysis.hip_extension_angular_velocity_deg_s==null?'—°/s':`${analysis.hip_extension_angular_velocity_deg_s}°/s`;
   const lean=analysis.trunk_lean_at_landing_deg;
   $('#metricBalance').textContent=lean==null?'측정 불가':`${lean.toFixed(0)}° 기울기`;
   $('#balanceBar').style.width=lean==null?'0%':`${Math.max(8,100-Math.min(lean,50)*1.5)}%`;
@@ -535,7 +535,7 @@ $('#createClassButton').addEventListener('click',async()=>{
   const students=$('#rosterNamesInput').value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean);
   try {
     const data=await teacherRequest({action:'create-class',name,groups,students});
-    $('#generatedCode').innerHTML=`수업 참여 코드 <strong>${escaped(data.classroom.join_code)}</strong><button id="copyJoinCode" class="outline-button">복사</button>`;
+    $('#generatedCode').innerHTML=`학생은 사이트에서 이름만 고르면 이 수업에 참여해요. 수업 코드 <strong>${escaped(data.classroom.join_code)}</strong><button id="copyJoinCode" class="outline-button">복사</button>`;
     $('#teacherClassCode').textContent=data.classroom.join_code;localStorage.setItem('bigjump.teacherClassCode',data.classroom.join_code);
     $('#joinCode').value=data.classroom.join_code;
     $('#copyJoinCode').addEventListener('click',()=>navigator.clipboard.writeText(data.classroom.join_code).then(()=>toast('코드를 복사했어요.')));

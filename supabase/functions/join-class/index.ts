@@ -26,10 +26,14 @@ Deno.serve(async (request) => {
 
     const admin = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
     const body = await request.json();
+    // Without a class code, students join the most recently created class.
     const classCode = String(body.class_code ?? "").trim().toUpperCase();
-    if (!/^BJ-[A-Z0-9]{5,8}$/.test(classCode)) return reply({ error: "수업 코드를 확인해주세요." }, 400);
-    const { data: classroom, error: classError } = await admin.from("classes").select("id,name,join_code").eq("join_code", classCode).maybeSingle();
-    if (classError || !classroom) return reply({ error: "수업을 찾을 수 없습니다." }, 404);
+    if (classCode && !/^BJ-[A-Z0-9]{5,8}$/.test(classCode)) return reply({ error: "수업 코드를 확인해주세요." }, 400);
+    const classQuery = admin.from("classes").select("id,name,join_code");
+    const { data: classroom, error: classError } = classCode
+      ? await classQuery.eq("join_code", classCode).maybeSingle()
+      : await classQuery.order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (classError || !classroom) return reply({ error: "아직 열린 수업이 없습니다. 선생님이 수업을 만들 때까지 기다려주세요." }, 404);
 
     if (body.action === "list-roster") {
       const { data: roster, error } = await admin.from("roster").select("id,student_name,group_id,groups(name),auth_user_id").eq("class_id", classroom.id).order("student_name");
@@ -38,7 +42,7 @@ Deno.serve(async (request) => {
       const choices = (roster ?? []).filter((row) => !row.auth_user_id || row.auth_user_id === user.id).map((row) => ({
         id: row.id, name: row.student_name, group: (row.groups as { name?: string } | null)?.name ?? "미배정", selected: row.id === current?.roster_id,
       }));
-      return reply({ class_id: classroom.id, class_name: classroom.name, roster: choices });
+      return reply({ class_id: classroom.id, class_name: classroom.name, class_code: classroom.join_code, roster: choices });
     }
 
     if (body.action !== "join") return reply({ error: "Unknown action" }, 400);
