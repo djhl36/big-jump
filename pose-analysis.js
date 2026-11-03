@@ -49,6 +49,12 @@ async function getLandmarker() {
   return landmarkerPromise;
 }
 
+async function resetLandmarker(model) {
+  try { model?.close?.(); } catch {}
+  landmarkerPromise = null;
+  return getLandmarker();
+}
+
 export function validPoint(p, minVisibility = 0.25) {
   return Boolean(p) && (p.visibility ?? 1) >= minVisibility && Number.isFinite(p.x) && Number.isFinite(p.y);
 }
@@ -278,7 +284,7 @@ function seekTo(video, time) {
 }
 
 export async function analyzeJump(video, { bodyMassKg, heightCm, exercise, onProgress = () => {}, onFrame = () => {} } = {}) {
-  const model=await getLandmarker();
+  let model=await getLandmarker();
   if (!video.videoWidth || !video.videoHeight || !Number.isFinite(video.duration)) throw new Error('영상이 아직 준비되지 않았습니다.');
   video.pause();
   const originalTime=video.currentTime;
@@ -288,6 +294,7 @@ export async function analyzeJump(video, { bodyMassKg, heightCm, exercise, onPro
   const aspect=video.videoWidth/video.videoHeight;
   const frames=[];
   const base=lastTimestamp+1000;
+  let rebuilds=0;
   for (let i=0;i<count;i++) {
     const time=Math.min(duration-0.001,i/fps);
     await seekTo(video,time);
@@ -298,7 +305,11 @@ export async function analyzeJump(video, { bodyMassKg, heightCm, exercise, onPro
       landmarks=model.detectForVideo(video,timestamp).landmarks?.[0] ?? null;
     } catch (error) {
       if (String(error?.message||error).toLowerCase().includes('security')) throw new Error('영상 보안 설정 때문에 프레임을 읽지 못했습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.');
-      throw error;
+      // MediaPipe's tracking box can collapse to zero size (e.g. the body leaves the frame or the pose
+      // is lost mid-jump). The graph then stays broken, so rebuild the model, skip this frame and go on.
+      console.warn('Pose graph failed at', time.toFixed(2), 's; rebuilding', error);
+      if (++rebuilds > 6) throw new Error('관절 추적이 계속 끊겨 분석하지 못했습니다. 머리부터 발끝까지 화면 안에 들어오도록 조금 더 멀리서 촬영해주세요.');
+      model = await resetLandmarker(model);
     }
     frames.push({time,landmarks});
     if (landmarks) onFrame({time,landmarks,videoWidth:video.videoWidth,videoHeight:video.videoHeight});

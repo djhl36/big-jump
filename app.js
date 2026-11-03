@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { analyzeJump, drawPose } from './pose-analysis.js?v=e677265fef';
+import { analyzeJump, drawPose } from './pose-analysis.js?v=631810f29a';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
