@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { analyzeJump, drawPose } from './pose-analysis.js?v=582005e9c3';
+import { analyzeJump, drawPose } from './pose-analysis.js?v=0b4d256b2e';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -308,38 +308,31 @@ function applyGroupFilter(groupId) {
 //  rating: a peer's three-step observation, for movement quality numbers can't show
 const V = (field, label, unit, digits, goal) => ({ type:'video', field, label, unit, digits, goal });
 const N = (label, unit, goal, extra = {}) => ({ type:'number', label, unit, goal, digits:1, ...extra });
-const R = label => ({ type:'rating', label });
+const RATINGS = [['good','잘함'],['ok','보통'],['again','다시']];
+const R = (label, options = RATINGS) => ({ type:'rating', label, options });
 const perSecond = count => ({ stopwatch:true, calc:value => value > 0 ? `초당 ${(count/value).toFixed(1)}회` : '' });
-const accuracyOf = countKey => ({ calc:(value, get) => { const total = Number(get(countKey)); return total > 0 ? `정확도 ${Math.max(0,Math.round((total-value)/total*100))}% · 성공 ${Math.max(0,total-value)}회` : ''; } });
 const ACTIVITIES = [
-  { key:'pogo-jump', name:'포고 점프', en:'Pogo Jump', filmed:false, desc:'발목 반동으로 짧고 빠르게 튀어 올라요. 촬영 없이 시간·횟수를 재요.', items:[
-    ['pogo_10s','10초 포고 점프','10초 동안 쉬지 않고 최대한 빠르게. 친구가 세어주기',N('10초 동안 횟수','회',{text:'지난 기록보다 많이'},{timer:10})],
-    ['pogo_20','20회 빠르게','20회를 하는 데 걸린 시간을 재요',N('20회 걸린 시간','초',{text:'짧을수록 좋아요'},perSecond(20))],
-    ['heel_touch','앞꿈치 착지','10초 동안 뒤꿈치가 바닥에 닿은 횟수',N('뒤꿈치 닿은 횟수','회',{max:0,text:'0회'})],
+  { key:'pogo-jump', name:'포고 점프', en:'Pogo Jump', filmed:false, desc:'발목 반동으로 짧고 빠르게 튀어 올라요. 촬영 없이 친구가 관찰해요.', items:[
+    ['pogo_10','10회 포고 점프','쉬지 않고 10회 연속으로 튀어 오르기',R('수행',[['done','수행 완료']])],
     ['ankle_spring','발목 탄성','무릎은 거의 굽히지 않고 발목 반동으로 튀어 오르기',R('관찰 평가')]]},
-  { key:'jump-stick', name:'점프 앤 스틱', en:'Jump & Stick', filmed:true, desc:'폭발적으로 도약한 뒤 균형 있게 착지해요. 옆에서 촬영해 분석해요.', items:[
+  { key:'squat-jump', name:'스쿼트 점프', en:'Squat Jump', filmed:true, desc:'스쿼트 자세에서 폭발적으로 뛰어오르고 부드럽게 착지해요. 옆에서 촬영해 분석해요.', items:[
     ['explosive_takeoff','폭발적인 도약','팔 스윙과 함께 발목·무릎·고관절을 빠르게 펴기',V('jump_height_cm','점프 높이','cm',1,{text:'지난 기록보다 높게'})],
     ['triple_extension','관절 신전 속도','도약 직전 무릎이 펴지는 속도 (발목·고관절은 분석 화면에서)',V('knee_extension_angular_velocity_deg_s','무릎 신전 각속도','°/s',0,{text:'지난 기록보다 빠르게'})],
-    ['shock_absorption','부드러운 착지','발목·무릎·고관절을 함께 굽혀 충격 흡수하기',V('landing_force_bw','평균 착지 힘','×체중',1,{max:3,text:'체중의 3배 이하'})],
-    ['posture_control','균형 있는 2초 정지','추가 스텝 없이 2초 동안, 몸통이 흔들리지 않게',V('balance_score','착지 균형 점수','점',0,{min:70,text:'70점 이상'})]]},
-  { key:'broad-jump-series', name:'브로드 점프 연속동작', en:'Broad Jump Series', filmed:true, desc:'앞으로 멀리 뛰고 리듬 있게 이어가요. 옆에서 촬영해 분석해요.', items:[
+    ['shock_absorption','부드러운 착지','발목·무릎·고관절을 함께 굽혀 충격 흡수하기',V('landing_force_bw','평균 착지 힘','×체중',1,{max:3,text:'체중의 3배 이하'})]]},
+  { key:'broad-jump-series', name:'브로드 점프 연속동작 3회', en:'Broad Jump Series', filmed:true, desc:'앞으로 멀리 3회 연속으로 뛰어요. 옆에서 촬영해 분석해요.', items:[
     ['full_extension','전신 신전','발목·무릎·고관절을 쭉 펴서 앞쪽 위로 뛰기',V('hip_extension_angular_velocity_deg_s','고관절 신전 각속도','°/s',0,{text:'지난 기록보다 빠르게'})],
     ['distance','3회 연속 거리','출발선부터 세 번째 착지한 뒤꿈치까지 줄자로 재기',N('3회 연속 거리','cm',{text:'지난 기록보다 멀리'})],
-    ['stable_landing','부드러운 착지','엉덩이를 뒤로 빼며 양발로 동시에 착지하기',V('landing_force_bw','평균 착지 힘','×체중',1,{max:3,text:'체중의 3배 이하'})],
-    ['rhythm_link','리듬 연결','착지 후 멈추지 않고 다음 점프로 이어가기',V('mean_contact_time_s','착지~다음 도약 시간','초',2,{max:0.5,text:'0.5초 이하'})]]},
+    ['soft_landing','부드러운 착지','① 엉덩이가 가라앉지 않기 ② 무릎이 안쪽으로 모이지 않기 ③ 착지 반동(지면 반력)으로 바로 다시 뛰기',R('지킨 개수',[['3','3개 모두'],['2','2개'],['1','1개']])]]},
   { key:'lateral-line-hop', name:'좌우 라인홉', en:'Lateral Line Hop', filmed:false, desc:'선을 사이에 두고 좌우로 빠르게 넘어요. 촬영 없이 시간·횟수를 재요.', items:[
     ['lat_10s','10초 좌우 라인홉','10초 동안 선을 넘은 횟수. 친구가 세어주기',N('10초 동안 넘은 횟수','회',{text:'지난 기록보다 많이'},{timer:10})],
-    ['lat_miss','선 밟지 않기','같은 10초 동안 선을 밟은 횟수',N('선 밟은 횟수','회',{max:0,text:'0회'},accuracyOf('lat_10s'))],
-    ['lat_20','20회 빠르게','20회를 넘는 데 걸린 시간을 재요',N('20회 걸린 시간','초',{text:'짧을수록 좋아요'},perSecond(20))],
+    ['lat_20','20회 빠르게','20회를 넘는 데 걸린 시간. 선을 밟은 횟수는 세지 않아요',N('20회 걸린 시간','초',{text:'짧을수록 좋아요'},perSecond(20))],
     ['centered_trunk','몸통 중심','상체는 가운데, 다리만 좌우로 움직이기',R('관찰 평가')]]},
   { key:'forward-back-line-hop', name:'앞뒤 라인홉', en:'Forward-Back Line Hop', filmed:false, desc:'선을 사이에 두고 앞뒤로 빠르게 넘어요. 촬영 없이 시간·횟수를 재요.', items:[
     ['fb_10s','10초 앞뒤 라인홉','10초 동안 선을 넘은 횟수. 친구가 세어주기',N('10초 동안 넘은 횟수','회',{text:'지난 기록보다 많이'},{timer:10})],
-    ['fb_miss','선 밟지 않기','같은 10초 동안 선을 밟은 횟수',N('선 밟은 횟수','회',{max:0,text:'0회'},accuracyOf('fb_10s'))],
-    ['fb_20','20회 빠르게','20회를 넘는 데 걸린 시간을 재요',N('20회 걸린 시간','초',{text:'짧을수록 좋아요'},perSecond(20))],
+    ['fb_20','20회 빠르게','20회를 넘는 데 걸린 시간. 선을 밟은 횟수는 세지 않아요',N('20회 걸린 시간','초',{text:'짧을수록 좋아요'},perSecond(20))],
     ['upright_trunk','상체 유지','상체가 앞뒤로 숙여지지 않게 하기',R('관찰 평가')]]},
 ];
 const FILMED = ACTIVITIES.filter(a=>a.filmed);
-const RATINGS = [['good','잘함'],['ok','보통'],['again','다시']];
 const progress = new Map(); // `${userId}:${activity}:${item}` -> {checked, record}
 const progressKey = (user, activity, item) => `${user}:${activity}:${item}`;
 const entryFor = (user, activity, item) => progress.get(progressKey(user, activity, item));
@@ -348,7 +341,7 @@ let groupMembers = []; // students in my 모둠, in a fixed order for the role r
 let checkTarget = null; // whose checklist is open
 const chosenVideo = new Map(); // `${target}:${activity}` -> video id picked for records
 let currentActivity = (()=>{ try { return localStorage.getItem('bigjump.activity'); } catch { return null; } })();
-if (!ACTIVITIES.some(a=>a.key===currentActivity)) currentActivity = 'jump-stick';
+if (!ACTIVITIES.some(a=>a.key===currentActivity)) currentActivity = 'squat-jump';
 let openActivity = (()=>{ try { return localStorage.getItem('bigjump.open'); } catch { return null; } })(); // row whose record sheet is open, or none
 const activityByKey = key => ACTIVITIES.find(a=>a.key===key) || ACTIVITIES[1];
 const activityDone = (activity, user = authUser?.id) => activity.items.every(([item])=>isDone(entryFor(user,activity.key,item)));
@@ -379,7 +372,7 @@ function recordVideos(activity, targetId) {
 }
 function formatRecord(value, rec) {
   if (value == null || value === '') return '—';
-  if (rec.type === 'rating') return RATINGS.find(([k])=>k===value)?.[1] || value;
+  if (rec.type === 'rating') return (rec.options||RATINGS).find(([k])=>k===value)?.[1] || value;
   return `${Number(value).toLocaleString('ko-KR',{maximumFractionDigits:rec.digits??1})}${rec.unit?` ${rec.unit}`:''}`;
 }
 function meetsGoal(value, goal) {
@@ -391,7 +384,7 @@ function meetsGoal(value, goal) {
 function recordControl(rec, entry, suggestion, itemKey) {
   const value = entry?.record?.value;
   if (rec.type === 'rating') {
-    return `<div class="rating-row">${RATINGS.map(([k,label])=>`<button type="button" data-rate="${k}" class="${value===k?'selected':''}">${label}</button>`).join('')}</div>`;
+    return `<div class="rating-row">${(rec.options||RATINGS).map(([k,label])=>`<button type="button" data-rate="${k}" class="${value===k?'selected':''}">${label}</button>`).join('')}</div>`;
   }
   const fill = rec.type === 'video'
     ? (suggestion != null
@@ -455,7 +448,7 @@ function renderActivities() {
   let post = $('#postRecordBox');
   if (!post) {
     post = document.createElement('div'); post.id = 'postRecordBox'; post.className = 'post-record';
-    post.innerHTML = '<input id="recordMemo" maxlength="200" placeholder="한 줄 소감 (선택)"/><button type="button" id="postRecord">📋 기록 게시판에 올리기</button>';
+    post.innerHTML = '<input id="recordMemo" maxlength="200" placeholder="한 줄 소감 또는 친구의 피드백 (선택)"/><button type="button" id="postRecord">📋 기록 게시판에 올리기</button>';
     $('.check-list', card).after(post);
   }
   $('#postRecord').disabled = !count;
@@ -716,7 +709,7 @@ function renderAnalysisMetrics(analysis,{mass,height}={}) {
   $('#metricHeightMethod').textContent=jumpLooksWrong(analysis)?'비정상적으로 높아요 · 다시 촬영 권장':(Number(height)>0?'체공 시간 기반 · 신장 비교':'체공 시간 기반 추정');
   $('#metricPowerMethod').textContent=power?'참고 추정치 · 오차 큼'
     :jumpLooksWrong(analysis)?'점프 측정이 비정상이라 생략'
-    :analysis.power_note?.includes('점프 앤 스틱')?'점프 앤 스틱에서만 추정'
+    :analysis.power_note?.includes('스쿼트 점프')?'스쿼트 점프에서만 추정'
     :'체중을 입력하면 추정';
   const deg=(id,v)=>{$(`#${id}`).innerHTML=v==null?'— <small>°/s</small>':`${Math.round(v)} <small>°/s</small>`;};
   deg('metricAnkleVelocity',analysis.ankle_extension_angular_velocity_deg_s);
@@ -736,7 +729,7 @@ function renderAnalysisMetrics(analysis,{mass,height}={}) {
   $('#metricBalance').textContent=score==null?'측정 불가':`${score}점`;
   $('#balanceBar').style.width=score==null?'0%':`${Math.max(4,score)}%`;
   $('#analysisQuality').textContent='포즈 감지 · 참고값';
-  $('#analysisDisclaimer').textContent='착지 균형 점수 = 100 − 몸통 흔들림×1.5 − 엉덩이 흔들림(cm)×2.5 − 2초 미만 정지 감점. 평균 착지 힘 = 1 + 착지 속도 ÷ (중력가속도 × 흡수 시간). 점프 높이는 체공 시간으로 추정하며 도약·착지 높이가 같다고 가정합니다. 추정 파워는 Sayers 식(51.9×점프높이cm + 48.9×체중kg − 2007)으로 계산한 참고값으로, 힘판 측정이 아니며 오차가 수백 W에 이를 수 있습니다.';
+  $('#analysisDisclaimer').textContent='착지 균형 점수 = 100 − 몸통 흔들림×1.5 − 엉덩이 흔들림(cm)×2.5 − 2초 미만 정지 감점. 평균 착지 힘 = 1 + 착지 속도 ÷ (중력가속도 × 흡수 시간). 점프 높이는 체공 시간으로 추정하며 도약·착지 높이가 같다고 가정합니다. 추정 파워는 Sayers 스쿼트 점프 식(60.7×점프높이cm + 45.3×체중kg − 2055)으로 계산한 참고값으로, 힘판 측정이 아니며 오차가 수백 W에 이를 수 있습니다.';
 }
 async function waitMetadata(video) {
   if(video.readyState>=1)return;
