@@ -131,8 +131,11 @@ export function computeJumpMetrics(frames, { fps, aspect, bodyMassKg, heightCm, 
   if (!Number.isFinite(scale) || scale<=0.05 || !Number.isFinite(ground)) {
     throw new Error('전신 관절을 찾지 못했습니다. 옆면에서 머리부터 발끝까지 보이게 다시 촬영해주세요.');
   }
-  const liftThreshold=Math.max(0.01,scale*0.03); // ~5 cm: clearly off the floor
-  const groundTol=Math.max(0.004,scale*0.01);    // ~1.5 cm: back on the floor
+  // Pogo and line hops leave the floor by only a few cm, so they use a lower threshold.
+  const repeated=/포고|라인홉|연속/.test(String(exercise||''));
+  const liftThreshold=repeated?Math.max(0.005,scale*0.014):Math.max(0.01,scale*0.03); // ~2 cm / ~5 cm off the floor
+  const groundTol=repeated?Math.max(0.002,scale*0.005):Math.max(0.004,scale*0.01);    // ~0.7 cm / ~1.5 cm: back on the floor
+  const minFlight=repeated?0.06:MIN_FLIGHT_S;
   const airborne=footY.map(y=>Number.isFinite(y)&&y<ground-liftThreshold);
 
   const bouts=[];
@@ -163,7 +166,7 @@ export function computeJumpMetrics(frames, { fps, aspect, bodyMassKg, heightCm, 
     const peakY=Math.min(...footY.slice(k,m+1).filter(Number.isFinite));
     return {start:k,end:m,takeoff,landing,duration:landing-takeoff,floor,peakY};
   });
-  const valid=candidates.filter(c=>c.duration>=MIN_FLIGHT_S&&c.duration<=MAX_FLIGHT_S);
+  const valid=candidates.filter(c=>c.duration>=minFlight&&c.duration<=MAX_FLIGHT_S);
   if (!valid.length) {
     if (candidates.some(c=>c.duration>MAX_FLIGHT_S)) throw new Error('체공 시간이 비정상적으로 깁니다. 슬로모션으로 촬영한 영상이면 일반 속도(1배속) 영상으로 다시 올려주세요.');
     throw new Error('도약과 착지 구간을 찾지 못했습니다. 준비 자세와 착지가 모두 보이는 영상으로 다시 시도해주세요.');
@@ -185,6 +188,39 @@ export function computeJumpMetrics(frames, { fps, aspect, bodyMassKg, heightCm, 
   const landingIndex=Math.min(n-1,jump.end+1);
   const lean=Math.abs(lms[landingIndex]?trunkAngle(lms[landingIndex],aspect):NaN);
 
+  // Landing: how far and how fast the knee bends to absorb the impact (largest jump).
+  const absorbTo=Math.min(n-1,landingIndex+Math.round(0.6*fps));
+  let absorbEnd=landingIndex, kneeLowest=knee[landingIndex];
+  for (let i=landingIndex;i<=absorbTo;i++) if (Number.isFinite(knee[i]) && !(knee[i]>=kneeLowest)) { kneeLowest=knee[i]; absorbEnd=i; }
+  const landingFlex=Number.isFinite(knee[landingIndex])&&Number.isFinite(kneeLowest)?knee[landingIndex]-kneeLowest:NaN;
+  const flexVel=peakExtensionVelocity(knee.map(v=>-v),times,landingIndex,absorbTo);
+  // Stick: time the hips and feet stay still after the landing absorption.
+  const hipMid=lms.map(lm=>lm&&validPoint(lm[23])&&validPoint(lm[24])?{x:(lm[23].x+lm[24].x)/2,y:(lm[23].y+lm[24].y)/2}:null);
+  const footX=lms.map(lm=>{ if(!lm) return NaN; const xs=FOOT_POINTS.map(i=>lm[i]).filter(p=>validPoint(p)).map(p=>p.x); return xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:NaN; });
+  let holdS=NaN;
+  if (hipMid[absorbEnd] && Number.isFinite(footX[absorbEnd])) {
+    const ref=hipMid[absorbEnd], refFoot=footX[absorbEnd], tol=scale*0.06;
+    let last=absorbEnd;
+    for (let i=absorbEnd+1;i<n;i++) {
+      if (airborne[i]) break;
+      if (!hipMid[i] || !Number.isFinite(footX[i])) { if (i-last>3) break; continue; }
+      if (Math.hypot((hipMid[i].x-ref.x)*aspect,hipMid[i].y-ref.y)>tol || Math.abs((footX[i]-refFoot)*aspect)>tol) break;
+      last=i;
+    }
+    holdS=times[last]-times[landingIndex];
+  }
+  // Repeated jumps (pogo, line hops, broad series): ground contact between hops and rhythm.
+  const hops=valid.slice().sort((a,b)=>a.takeoff-b.takeoff);
+  const contacts=[], flights=[];
+  for (let i=1;i<hops.length;i++) {
+    const contact=hops[i].takeoff-hops[i-1].landing;
+    if (contact>0.03&&contact<1.5) { contacts.push(contact); flights.push((hops[i].duration+hops[i-1].duration)/2); }
+  }
+  const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:NaN;
+  const meanContact=mean(contacts), meanFlight=mean(flights);
+  const span=hops.length>=3?hops[hops.length-1].takeoff-hops[0].takeoff:NaN;
+  const cycles=hops.slice(1).map((h,i)=>h.takeoff-hops[i].takeoff).filter(c=>c<2);
+  const cycleMean=mean(cycles), cycleSd=cycles.length>1?Math.sqrt(mean(cycles.map(c=>(c-cycleMean)**2))):NaN;
   const mass=Number(bodyMassKg);
   const exerciseName=String(exercise||'');
   const isSquatJump=exerciseName.includes('스쿼트');
@@ -215,6 +251,14 @@ export function computeJumpMetrics(frames, { fps, aspect, bodyMassKg, heightCm, 
     takeoff_s:round(jump.takeoff,3),
     landing_s:round(jump.landing,3),
     jump_count:valid.length,
+    landing_knee_flexion_deg:round(landingFlex,1),
+    landing_knee_flexion_velocity_deg_s:round(flexVel,1),
+    stick_hold_s:round(holdS,2),
+    hop_count:hops.length,
+    mean_contact_time_s:contacts.length?round(meanContact,3):null,
+    reactive_strength_index:contacts.length?round(meanFlight/meanContact,2):null,
+    hops_per_10s:Number.isFinite(span)&&span>0?round((hops.length-1)/span*10,1):null,
+    rhythm_variation_pct:Number.isFinite(cycleSd)&&cycleMean>0?round(cycleSd/cycleMean*100,1):null,
     confidence:'estimated',
     sample_fps:fps,
     pose_model:`mediapipe-tasks-vision@${VISION_VERSION} pose_landmarker_full`,

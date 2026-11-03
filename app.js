@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { analyzeJump, drawPose } from './pose-analysis.js?v=dd86b523ec';
+import { analyzeJump, drawPose } from './pose-analysis.js?v=e677265fef';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -164,7 +164,7 @@ function subscribeToClass() {
     .on('postgres_changes',{event:'*',schema:'public',table:'class_members',filter:`class_id=eq.${membership.class_id}`},()=>{scheduleFeedRefresh();loadGroupMembers();})
     .on('postgres_changes',{event:'*',schema:'public',table:'activity_progress',filter:`class_id=eq.${membership.class_id}`},payload=>{
       const row=payload.new;if(!row?.user_id)return;
-      progress.set(progressKey(row.user_id,row.activity_key,row.item_key),row.checked);renderActivities();
+      progress.set(progressKey(row.user_id,row.activity_key,row.item_key),{checked:row.checked,record:row.record||null});renderActivities();
     })
     .subscribe(status=>{if(status==='SUBSCRIBED')setConnection(membership.role==='teacher'?'교사 · 실시간 연결':'수업 참여 중',true);});
 }
@@ -284,6 +284,7 @@ function renderFeed() {
   if(analysisDialog.open)renderComments();
   $$('[data-delete-video]',feed).forEach(button=>button.addEventListener('click',()=>deleteVideo(button.dataset.deleteVideo)));
   applyGroupFilter($('#filterButton').dataset.group||'');
+  renderActivities(); // record suggestions read from the analysed videos
 }
 function applyGroupFilter(groupId) {
   $('#filterButton').dataset.group = groupId;
@@ -293,41 +294,52 @@ function applyGroupFilter(groupId) {
   $$('.sidebar .group-link').forEach(link=>link.classList.toggle('active',link.dataset.group===groupId));
 }
 
+// Each checklist item is a record, not just a tick.
+//  video:  value comes from the video analysis (a peer can also type it in)
+//  number: a peer counts or times it while watching (e.g. 선 밟은 횟수)
+//  rating: a peer's three-step observation, for movement quality the camera can't measure well
+const V = (field, label, unit, digits, goal) => ({ type:'video', field, label, unit, digits, goal });
+const N = (label, unit, goal, field) => ({ type:'number', label, unit, goal, field, digits:1 });
+const R = label => ({ type:'rating', label });
 const ACTIVITIES = [
   { key:'pogo-jump', name:'포고 점프', en:'Pogo Jump', desc:'발목 반동으로 짧고 빠르게 튀어 올라요.', items:[
-    ['ankle_spring','발목 탄성','무릎은 살짝만 굽히고 발목 반동으로 튀어 오르기'],
-    ['short_contact','짧은 접지','발이 닿자마자 바로 다시 뛰어오르기'],
-    ['forefoot_landing','앞꿈치 착지','뒤꿈치가 바닥에 닿지 않게 하기'],
-    ['tall_posture','곧은 몸통','시선은 앞, 몸통이 앞뒤로 흔들리지 않기']]},
+    ['short_contact','짧은 접지','발이 닿자마자 바로 다시 뛰어오르기',V('mean_contact_time_s','평균 접지 시간','초',2,{max:0.25,text:'0.25초 이하'})],
+    ['ankle_spring','발목 탄성','무릎은 살짝만 굽히고 발목 반동으로 튀어 오르기',V('reactive_strength_index','반응 지수(체공÷접지)','',2,{min:1,text:'1.0 이상'})],
+    ['forefoot_landing','앞꿈치 착지','뒤꿈치가 바닥에 닿지 않게 하기',N('뒤꿈치 닿은 횟수','회',{max:0,text:'0회'})],
+    ['tall_posture','곧은 몸통','시선은 앞, 몸통이 앞뒤로 흔들리지 않기',R('관찰 평가')]]},
   { key:'jump-stick', name:'점프 앤 스틱', en:'Jump & Stick', desc:'폭발적으로 도약한 뒤 균형 있게 착지해요.', items:[
-    ['explosive_takeoff','폭발적인 도약','팔 스윙과 하체 신전을 연결하기'],
-    ['shock_absorption','부드러운 착지','발목·무릎·고관절을 함께 굽혀 충격 흡수하기'],
-    ['knee_alignment','무릎 정렬','착지할 때 무릎이 안쪽으로 모이지 않기'],
-    ['posture_control','2초 정지','추가 스텝 없이 2초 동안 균형 유지하기']]},
+    ['explosive_takeoff','폭발적인 도약','팔 스윙과 하체 신전을 연결하기',V('knee_extension_angular_velocity_deg_s','무릎 신전 각속도','°/s',0,{text:'지난 기록보다 빠르게'})],
+    ['shock_absorption','부드러운 착지','발목·무릎·고관절을 함께 굽혀 충격 흡수하기',V('landing_knee_flexion_deg','착지 후 무릎 굽힘','°',0,{min:30,text:'30° 이상 굽히기'})],
+    ['knee_alignment','무릎 정렬','착지할 때 무릎이 안쪽으로 모이지 않기',R('정면 관찰 평가')],
+    ['posture_control','2초 정지','추가 스텝 없이 2초 동안 균형 유지하기',V('stick_hold_s','정지 시간','초',1,{min:2,text:'2초 이상'})]]},
   { key:'broad-jump-series', name:'브로드 점프 연속동작', en:'Broad Jump Series', desc:'앞으로 멀리 뛰고 리듬 있게 이어가요.', items:[
-    ['arm_swing','팔 스윙','팔을 뒤에서 앞으로 크게 휘두르며 도약하기'],
-    ['full_extension','전신 신전','발목·무릎·고관절을 쭉 펴서 앞쪽 위로 뛰기'],
-    ['stable_landing','안정된 착지','엉덩이를 뒤로 빼며 양발로 동시에 착지하기'],
-    ['rhythm_link','리듬 연결','착지 후 멈추지 않고 다음 점프로 이어가기']]},
+    ['arm_swing','팔 스윙','팔을 뒤에서 앞으로 크게 휘두르며 도약하기',R('관찰 평가')],
+    ['full_extension','전신 신전','발목·무릎·고관절을 쭉 펴서 앞쪽 위로 뛰기',V('hip_extension_angular_velocity_deg_s','고관절 신전 각속도','°/s',0,{text:'지난 기록보다 빠르게'})],
+    ['stable_landing','안정된 착지','엉덩이를 뒤로 빼며 양발로 동시에 착지하기',V('landing_knee_flexion_deg','착지 후 무릎 굽힘','°',0,{min:30,text:'30° 이상 굽히기'})],
+    ['rhythm_link','리듬 연결','착지 후 멈추지 않고 다음 점프로 이어가기',V('mean_contact_time_s','착지~다음 도약 시간','초',2,{max:0.5,text:'0.5초 이하'})]]},
   { key:'lateral-line-hop', name:'좌우 라인홉', en:'Lateral Line Hop', desc:'선을 사이에 두고 좌우로 빠르게 넘어요.', items:[
-    ['light_feet','가벼운 발','앞꿈치로 가볍게 선을 넘기'],
-    ['clear_line','선 밟지 않기','매번 선을 정확히 넘어 착지하기'],
-    ['centered_trunk','몸통 중심','상체는 가운데, 다리만 좌우로 움직이기'],
-    ['steady_rhythm','일정한 리듬','처음부터 끝까지 같은 속도 유지하기']]},
+    ['steady_rhythm','빠르고 일정한 리듬','10초 동안 같은 속도로 넘기 (친구가 세어주기)',N('10초 동안 넘은 횟수','회',{text:'지난 기록보다 많이'},'hops_per_10s')],
+    ['clear_line','선 밟지 않기','매번 선을 정확히 넘어 착지하기',N('선 밟은 횟수','회',{max:0,text:'0회'})],
+    ['light_feet','가벼운 발','앞꿈치로 가볍게 튀어 오르기',V('mean_contact_time_s','평균 접지 시간','초',2,{max:0.3,text:'0.3초 이하'})],
+    ['centered_trunk','몸통 중심','상체는 가운데, 다리만 좌우로 움직이기',R('관찰 평가')]]},
   { key:'forward-back-line-hop', name:'앞뒤 라인홉', en:'Forward-Back Line Hop', desc:'선을 사이에 두고 앞뒤로 빠르게 넘어요.', items:[
-    ['quick_rebound','빠른 반동','발이 닿자마자 바로 튀어 오르기'],
-    ['clear_line','선 밟지 않기','앞뒤 모두 선을 정확히 넘기'],
-    ['upright_trunk','상체 유지','상체가 앞뒤로 숙여지지 않게 하기'],
-    ['soft_knees','부드러운 무릎','무릎·발목을 살짝 굽혀 충격 흡수하기']]},
+    ['quick_rebound','빠른 반동','10초 동안 같은 속도로 넘기 (친구가 세어주기)',N('10초 동안 넘은 횟수','회',{text:'지난 기록보다 많이'},'hops_per_10s')],
+    ['clear_line','선 밟지 않기','앞뒤 모두 선을 정확히 넘기',N('선 밟은 횟수','회',{max:0,text:'0회'})],
+    ['soft_knees','짧은 접지','무릎·발목을 살짝 굽혀 닿자마자 튀어 오르기',V('mean_contact_time_s','평균 접지 시간','초',2,{max:0.3,text:'0.3초 이하'})],
+    ['upright_trunk','상체 유지','상체가 앞뒤로 숙여지지 않게 하기',R('관찰 평가')]]},
 ];
-const progress = new Map(); // `${userId}:${activity}:${item}` -> checked
+const RATINGS = [['good','잘함'],['ok','보통'],['again','다시']];
+const progress = new Map(); // `${userId}:${activity}:${item}` -> {checked, record}
 const progressKey = (user, activity, item) => `${user}:${activity}:${item}`;
+const entryFor = (user, activity, item) => progress.get(progressKey(user, activity, item));
+const isDone = entry => Boolean(entry && (entry.record?.value != null || entry.checked));
 let groupMembers = []; // students in my 모둠, in a fixed order for the role rotation
 let checkTarget = null; // whose checklist is open
+const chosenVideo = new Map(); // `${target}:${activity}` -> video id picked for records
 let currentActivity = (()=>{ try { return localStorage.getItem('bigjump.activity'); } catch { return null; } })();
 if (!ACTIVITIES.some(a=>a.key===currentActivity)) currentActivity = 'jump-stick';
 const activityByKey = key => ACTIVITIES.find(a=>a.key===key) || ACTIVITIES[1];
-const activityDone = (activity, user = authUser?.id) => activity.items.every(([item])=>progress.get(progressKey(user,activity.key,item)));
+const activityDone = (activity, user = authUser?.id) => activity.items.every(([item])=>isDone(entryFor(user,activity.key,item)));
 // Rotation inside a 모둠: while one member exercises, the next films and the one after gives feedback and checks.
 function rotationFor(userId) {
   const n = groupMembers.length, i = groupMembers.findIndex(m=>m.user_id===userId);
@@ -345,7 +357,41 @@ async function loadGroupMembers() {
   renderActivities();
 }
 
+// Analysed videos of this activity that can feed the target's records:
+// the target's own uploads first, then the 모둠's (the filmer may upload from their own phone).
+function recordVideos(activity, targetId) {
+  const memberIds = new Set([targetId, ...groupMembers.map(m=>m.user_id)]);
+  return videoRows
+    .filter(row => row.exercise === activity.name && row.analysis && (memberIds.has(row.user_id) || (membership?.group_id && row.group_id === membership.group_id)))
+    .sort((a,b) => (b.user_id===targetId) - (a.user_id===targetId) || new Date(b.created_at) - new Date(a.created_at));
+}
+function formatRecord(value, rec) {
+  if (value == null || value === '') return '—';
+  if (rec.type === 'rating') return RATINGS.find(([k])=>k===value)?.[1] || value;
+  return `${Number(value).toLocaleString('ko-KR',{maximumFractionDigits:rec.digits??1})}${rec.unit?` ${rec.unit}`:''}`;
+}
+function meetsGoal(value, goal) {
+  if (value == null || !goal) return null;
+  if (goal.min != null) return Number(value) >= goal.min;
+  if (goal.max != null) return Number(value) <= goal.max;
+  return null;
+}
+function recordControl(rec, entry, suggestion) {
+  const value = entry?.record?.value;
+  if (rec.type === 'rating') {
+    return `<div class="rating-row">${RATINGS.map(([k,label])=>`<button type="button" data-rate="${k}" class="${value===k?'selected':''}">${label}</button>`).join('')}</div>`;
+  }
+  const fill = rec.field
+    ? (suggestion != null
+      ? `<button type="button" class="fill-button" data-fill="${suggestion}">📹 영상값 ${escaped(formatRecord(suggestion,rec))}</button>`
+      : `<span class="fill-empty">${rec.type==='video'?'📹 영상값 없음':''}</span>`)
+    : '';
+  return `<div class="record-row"><input type="number" inputmode="decimal" step="any" min="0" value="${value ?? ''}" placeholder="${rec.type==='video'?'영상값 또는 직접 입력':'세어서 입력'}"><em>${escaped(rec.unit||'')}</em><button type="button" class="save-record">기록</button></div>${fill}`;
+}
+
 function renderActivities() {
+  const typing = document.activeElement?.closest?.('.record-item');
+  const typed = typing ? { key: typing.dataset.checkKey, value: document.activeElement.value } : null;
   const activity = activityByKey(currentActivity);
   const card = $('.check-card');
   let tabs = $('#activityTabs');
@@ -357,57 +403,105 @@ function renderActivities() {
   const target = groupMembers.find(m=>m.user_id===checkTarget) || me;
   const roles = rotationFor(target.user_id);
   who.innerHTML = groupMembers.length > 1
-    ? `<div class="check-who-label">운동하는 모둠원을 고르고 서로 체크해줘요</div><div class="member-chips">${groupMembers.map(m=>`<button type="button" data-check-target="${escaped(m.user_id)}" class="${m.user_id===target.user_id?'selected':''}">${escaped(m.display_name)}${m.user_id===me.user_id?' (나)':''}</button>`).join('')}</div>`
-      + (roles ? `<div class="role-line"><span>🏃 운동 <b>${escaped(target.display_name)}</b></span><span>🎥 촬영 <b>${escaped(roles.film.display_name)}</b></span><span>💬 피드백·체크 <b>${escaped(roles.feedback.display_name)}</b></span></div>` : '')
-    : (membership ? '<div class="check-who-label">같은 모둠 친구가 참여하면 서로 체크해줄 수 있어요.</div>' : '');
+    ? `<div class="check-who-label">운동하는 모둠원을 고르고 서로 기록해줘요</div><div class="member-chips">${groupMembers.map(m=>`<button type="button" data-check-target="${escaped(m.user_id)}" class="${m.user_id===target.user_id?'selected':''}">${escaped(m.display_name)}${m.user_id===me.user_id?' (나)':''}</button>`).join('')}</div>`
+      + (roles ? `<div class="role-line"><span>🏃 운동 <b>${escaped(target.display_name)}</b></span><span>🎥 촬영 <b>${escaped(roles.film.display_name)}</b></span><span>💬 피드백·기록 <b>${escaped(roles.feedback.display_name)}</b></span></div>` : '')
+    : (membership ? '<div class="check-who-label">같은 모둠 친구가 참여하면 서로 기록해줄 수 있어요.</div>' : '');
+  // Which analysed video the records read from.
+  const videos = recordVideos(activity, target.user_id);
+  const pickKey = `${target.user_id}:${activity.key}`;
+  const video = videos.find(v=>v.id===chosenVideo.get(pickKey)) || videos[0];
+  const needsVideo = activity.items.some(([, , , rec])=>rec.type==='video');
+  let source = $('#recordSource');
+  if (!source) { source = document.createElement('div'); source.id = 'recordSource'; source.className = 'record-source'; $('.check-progress', card).after(source); }
+  source.innerHTML = !membership || !needsVideo && !videos.length ? ''
+    : videos.length
+      ? `<label>📹 기록할 영상 <select id="recordVideoSelect">${videos.map(v=>`<option value="${escaped(v.id)}" ${v.id===video?.id?'selected':''}>${escaped(v.display_name)} · ${new Date(v.created_at).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</option>`).join('')}</select></label>`
+      : `<p>${escaped(activity.name)} 영상을 올려 분석하면 📹 값을 바로 가져올 수 있어요.</p>`;
   $('.check-head strong', card).textContent = activity.name;
-  $('.check-head small', card).textContent = target.user_id === me.user_id ? '나의 움직임 체크리스트' : `${target.display_name}의 움직임 체크리스트`;
-  $('.check-list', card).innerHTML = activity.items.map(([item,title,hint])=>{
-    const checked = Boolean(progress.get(progressKey(target.user_id,activity.key,item)));
-    return `<label class="${checked?'checked':''}" data-check-key="${item}"><input type="checkbox" ${checked?'checked':''}><i></i><span><strong>${escaped(title)}</strong><small>${escaped(hint)}</small></span></label>`;
+  $('.check-head small', card).textContent = target.user_id === me.user_id ? '나의 움직임 기록지' : `${target.display_name}의 움직임 기록지`;
+  $('.check-list', card).innerHTML = activity.items.map(([item,title,hint,rec])=>{
+    const entry = entryFor(target.user_id,activity.key,item);
+    const done = isDone(entry);
+    const suggestion = rec.field ? video?.analysis?.[rec.field] ?? null : null;
+    const value = entry?.record?.value;
+    const goalHit = meetsGoal(value, rec.goal);
+    const meta = [rec.goal?.text ? `목표 ${rec.goal.text}` : '', entry?.record?.by ? `기록 ${entry.record.by}` : ''].filter(Boolean).join(' · ');
+    return `<div class="record-item ${done?'checked':''}" data-check-key="${item}"><div class="record-head"><i></i><span><strong>${escaped(title)}</strong><small>${escaped(hint)}</small></span>${done?`<b class="record-value ${goalHit===true?'hit':''}">${escaped(formatRecord(value,rec))}${goalHit===true?' ✓':''}</b>`:''}</div><div class="record-body"><span class="record-label">기록: ${escaped(rec.label)}</span>${recordControl(rec, entry, suggestion)}${meta?`<small class="record-meta">${escaped(meta)}</small>`:''}</div></div>`;
   }).join('');
-  const count = activity.items.filter(([item])=>progress.get(progressKey(target.user_id,activity.key,item))).length;
+  const count = activity.items.filter(([item])=>isDone(entryFor(target.user_id,activity.key,item))).length;
   $('.check-count', card).textContent = `${count}/${activity.items.length}`;
   $('.check-progress span', card).style.width = `${count/activity.items.length*100}%`;
   // Today's movement strip: selected activity + overall achievement.
-  const done = ACTIVITIES.filter(activityDone).length;
+  const done = ACTIVITIES.filter(a=>activityDone(a)).length;
   $('.session-copy strong').innerHTML = `${escaped(activity.name)} <span>${escaped(activity.en)}</span>`;
   $('.session-copy small').textContent = activity.desc;
   $('.progress-top span').textContent = '나의 활동 달성도';
   $('.progress-top strong').innerHTML = `${done} / ${ACTIVITIES.length} <small>활동</small>`;
   $('.progress-track span').style.width = `${done/ACTIVITIES.length*100}%`;
-  $('.progress-labels').innerHTML = '<span>체크리스트 4개를 모두 채우면 활동 완료</span>';
+  $('.progress-labels').innerHTML = '<span>기록 4개를 모두 채우면 활동 완료</span>';
+  if (typed) { const input = $(`.record-item[data-check-key="${typed.key}"] .record-row input`, card); if (input) { input.value = typed.value; input.focus(); } }
 }
+let recordColumn = true; // false until the teacher runs the record migration
 async function loadChecklist() {
   if (!membership) return;
-  const { data, error } = await supabase.from('activity_progress').select('user_id,activity_key,item_key,checked').eq('class_id',membership.class_id);
+  let { data, error } = await supabase.from('activity_progress').select('user_id,activity_key,item_key,checked,record').eq('class_id',membership.class_id);
+  if (error) { recordColumn = false; ({ data, error } = await supabase.from('activity_progress').select('user_id,activity_key,item_key,checked').eq('class_id',membership.class_id)); }
   if (error) return;
   progress.clear();
-  for (const row of data||[]) progress.set(progressKey(row.user_id,row.activity_key,row.item_key), row.checked);
+  for (const row of data||[]) progress.set(progressKey(row.user_id,row.activity_key,row.item_key), { checked: row.checked, record: row.record || null });
   renderActivities();
+}
+async function saveRecord(itemKey, value, extra = {}) {
+  const activity = activityByKey(currentActivity);
+  if (!membership) { toast('먼저 내 이름을 선택해 수업에 참여해주세요.'); return; }
+  const target = checkTarget || authUser.id, key = progressKey(target, activity.key, itemKey);
+  const before = progress.get(key);
+  const record = value == null ? null : { value, by: membership.display_name, at: new Date().toISOString(), ...extra };
+  progress.set(key, { checked: value != null, record });
+  renderActivities();
+  if (!recordColumn) { progress.set(key, before); renderActivities(); toast('기록 저장은 선생님이 서버 설정(SQL)을 마친 뒤 사용할 수 있어요.'); return; }
+  const { error } = await supabase.from('activity_progress').upsert({ class_id:membership.class_id, user_id:target, activity_key:activity.key, item_key:itemKey, checked:value != null, record, updated_at:new Date().toISOString() }, { onConflict:'class_id,user_id,activity_key,item_key' });
+  if (error) {
+    progress.set(key, before); renderActivities();
+    toast(/record/.test(error.message) || target !== authUser.id ? '기록 저장은 선생님이 서버 설정(SQL)을 마친 뒤 사용할 수 있어요.' : `기록을 저장하지 못했습니다: ${error.message}`);
+  }
 }
 $('.check-card').addEventListener('click', event => {
   const member = event.target.closest('[data-check-target]');
   if (member) { checkTarget = member.dataset.checkTarget; renderActivities(); return; }
   const tab = event.target.closest('[data-activity]');
-  if (!tab) return;
-  currentActivity = tab.dataset.activity;
-  try { localStorage.setItem('bigjump.activity', currentActivity); } catch {}
-  renderActivities();
-});
-$('.check-card').addEventListener('change', async event => {
-  const input = event.target.closest('.check-list input');
-  if (!input) return;
-  const label = input.closest('label'), activity = activityByKey(currentActivity);
-  if (!membership) { input.checked = false; toast('먼저 내 이름을 선택해 수업에 참여해주세요.'); return; }
-  const target = checkTarget || authUser.id, key = progressKey(target, activity.key, label.dataset.checkKey);
-  progress.set(key, input.checked);
-  renderActivities();
-  const {error}=await supabase.from('activity_progress').upsert({class_id:membership.class_id,user_id:target,activity_key:activity.key,item_key:label.dataset.checkKey,checked:input.checked,updated_at:new Date().toISOString()},{onConflict:'class_id,user_id,activity_key,item_key'});
-  if(error){
-    progress.set(key, !input.checked); renderActivities();
-    toast(target===authUser.id ? `체크 기록을 저장하지 못했습니다: ${error.message}` : '모둠원 체크는 선생님이 서버 설정을 마친 뒤 사용할 수 있어요.');
+  if (tab) {
+    currentActivity = tab.dataset.activity;
+    try { localStorage.setItem('bigjump.activity', currentActivity); } catch {}
+    renderActivities(); return;
   }
+  const item = event.target.closest('.record-item');
+  if (!item) return;
+  const rec = activityByKey(currentActivity).items.find(([k])=>k===item.dataset.checkKey)[3];
+  const target = checkTarget || authUser?.id;
+  const current = entryFor(target, currentActivity, item.dataset.checkKey)?.record?.value;
+  const rate = event.target.closest('[data-rate]');
+  if (rate) { saveRecord(item.dataset.checkKey, current === rate.dataset.rate ? null : rate.dataset.rate); return; }
+  const fill = event.target.closest('[data-fill]');
+  if (fill) {
+    const video = $('#recordVideoSelect')?.value;
+    saveRecord(item.dataset.checkKey, Number(fill.dataset.fill), { source:'video', video_id: video || null }); return;
+  }
+  if (event.target.closest('.save-record')) {
+    const raw = $('.record-row input', item).value.trim();
+    const value = raw === '' ? null : Number(raw);
+    if (value != null && !(value >= 0)) { toast('0 이상의 숫자를 입력해주세요.'); return; }
+    saveRecord(item.dataset.checkKey, value, { source:'peer' });
+    return;
+  }
+});
+$('.check-card').addEventListener('keydown', event => {
+  if (event.key === 'Enter' && event.target.matches('.record-row input')) { event.preventDefault(); event.target.closest('.record-row').querySelector('.save-record').click(); }
+});
+$('.check-card').addEventListener('change', event => {
+  if (event.target.id !== 'recordVideoSelect') return;
+  chosenVideo.set(`${checkTarget || authUser.id}:${currentActivity}`, event.target.value);
+  renderActivities();
 });
 $('#exerciseInput').innerHTML = ACTIVITIES.map(a=>`<option value="${escaped(a.name)}">${escaped(a.name)}</option>`).join('');
 renderActivities();
