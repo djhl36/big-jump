@@ -170,7 +170,7 @@ function subscribeToClass() {
 }
 function scheduleFeedRefresh() {
   clearTimeout(realtimeTimer);
-  realtimeTimer=setTimeout(()=>loadFeed(),450);
+  realtimeTimer=setTimeout(()=>loadFeed(),500+Math.random()*1500);
 }
 
 async function listRoster() {
@@ -228,6 +228,7 @@ function renderGroups() {
   applyGroupFilter('');
 }
 
+const signedCache = new Map(); // storage path -> {url, expires}
 async function loadFeed() {
   if (!membership) return;
   const { data, error } = await supabase.from('videos')
@@ -235,10 +236,15 @@ async function loadFeed() {
     .eq('class_id', membership.class_id).order('created_at', { ascending: false }).limit(60);
   if (error) { toast(error.message); return; }
   videoRows = data || [];
-  await Promise.all(videoRows.map(async row => {
-    const { data: signed } = await supabase.storage.from(videoBucket).createSignedUrl(row.storage_path, 3600);
-    row.signedUrl = signed?.signedUrl || '';
-  }));
+  // One batched request, and links are reused for 50 minutes so the browser can cache the videos
+  // instead of 24 phones re-signing and re-downloading every clip on each refresh.
+  const now = Date.now();
+  const missing = [...new Set(videoRows.map(row=>row.storage_path).filter(path=>!(signedCache.get(path)?.expires > now)))];
+  if (missing.length) {
+    const { data: signed } = await supabase.storage.from(videoBucket).createSignedUrls(missing, 3600);
+    for (const item of signed || []) if (item.signedUrl) signedCache.set(item.path, { url: item.signedUrl, expires: now + 50*60*1000 });
+  }
+  for (const row of videoRows) row.signedUrl = signedCache.get(row.storage_path)?.url || '';
   renderFeed();
 }
 
@@ -672,7 +678,7 @@ function isVideoFile(file) { return file.type.startsWith('video/') || (!file.typ
 function chooseVideo(file) {
   if(!file)return;
   if(!isVideoFile(file)){toast('영상 파일을 선택해주세요.');return;}
-  if(file.size>100*1024*1024){toast('영상은 100MB 이하로 올려주세요. 짧게 잘라서 올려주세요.');return;}
+  if(file.size>50*1024*1024){toast('영상은 50MB 이하로 올려주세요. 짧게 잘라서 올려주세요.');return;}
   selectedFile=file;$('#fileLabel').textContent=`✓ ${file.name} · ${fileSize(file.size)}`;$('#submitUpload').disabled=false;
 }
 for(const id of ['galleryInput','cameraInput'])$(`#${id}`).addEventListener('change',event=>chooseVideo(event.target.files[0]));
