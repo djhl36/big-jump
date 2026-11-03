@@ -7,8 +7,8 @@ const CONNECTIONS = [
   [23,25],[25,27],[27,29],[29,31],[27,31],[24,26],[26,28],[28,30],[30,32],[28,32],
 ];
 const SIDES = {
-  left: { shoulder: 11, hip: 23, knee: 25, ankle: 27 },
-  right: { shoulder: 12, hip: 24, knee: 26, ankle: 28 },
+  left: { shoulder: 11, hip: 23, knee: 25, ankle: 27, toe: 31 },
+  right: { shoulder: 12, hip: 24, knee: 26, ankle: 28, toe: 32 },
 };
 const FOOT_POINTS = [29, 30, 31, 32]; // heels and toes
 const G = 9.80665;
@@ -191,6 +191,9 @@ export function computeJumpMetrics(frames, { fps, aspect, bodyMassKg, heightCm, 
   const minKnee=kneeWindow.length?Math.min(...kneeWindow):NaN;
   const kneeVel=peakExtensionVelocity(knee,times,from,to);
   const hipVel=peakExtensionVelocity(hip,times,from,to);
+  // Ankle: knee–ankle–toe angle opens as the foot points (plantar flexion) at push-off.
+  const ankle=smooth(lms.map(lm=>lm?angleAt(lm[s.knee],lm[s.ankle],lm[s.toe],aspect):NaN),1);
+  const ankleVel=peakExtensionVelocity(ankle,times,from,to);
   const landingIndex=Math.min(n-1,jump.end+1);
   const lean=Math.abs(lms[landingIndex]?trunkAngle(lms[landingIndex],aspect):NaN);
 
@@ -214,6 +217,34 @@ export function computeJumpMetrics(frames, { fps, aspect, bodyMassKg, heightCm, 
       last=i;
     }
     holdS=times[last]-times[landingIndex];
+  }
+  // Landing impact. Touch-down speed from flight time: v = g·t/2.
+  // Mean landing force while the legs absorb it: F = m·v/Δt + m·g, i.e. 1 + v/(g·Δt) body weights.
+  const landingSpeed=G*jump.duration/2;
+  // Absorption ends when 90% of the knee bend is reached (the exact lowest frame is noisy).
+  let absorbAt=absorbEnd;
+  if (Number.isFinite(landingFlex)&&landingFlex>5) {
+    for (let i=landingIndex;i<=absorbEnd;i++) if (knee[i]<=knee[landingIndex]-0.9*landingFlex) { absorbAt=i; break; }
+  }
+  const absorbTime=Math.max(0.05,times[absorbAt]-jump.landing);
+  const landingForceBw=1+landingSpeed/(G*absorbTime);
+  const impulse=Number(bodyMassKg)>0?Number(bodyMassKg)*landingSpeed:NaN;
+  // Landing balance (side view): how much the trunk rocks and the hips sway in the 1 s after absorption.
+  const statureCm=Number(heightCm)>0?Number(heightCm):160;
+  const settleTo=Math.min(n-1,absorbEnd+Math.round(1.0*fps));
+  const leans=[], hipXs=[];
+  for (let i=absorbEnd;i<=settleTo;i++) {
+    if (airborne[i]) break;
+    if (lms[i]) { const a=trunkAngle(lms[i],aspect); if (Number.isFinite(a)) leans.push(a); }
+    if (hipMid[i]) hipXs.push(hipMid[i].x*aspect);
+  }
+  const leanRange=leans.length>3?Math.max(...leans)-Math.min(...leans):NaN;
+  const leanMax=leans.length?Math.max(...leans.map(Math.abs)):NaN;
+  const swayCm=hipXs.length>3?(Math.max(...hipXs)-Math.min(...hipXs))/scale*statureCm*0.92:NaN;
+  let balanceScore=NaN;
+  if (Number.isFinite(leanRange)&&Number.isFinite(swayCm)) {
+    balanceScore=100-Math.min(40,leanRange*1.5)-Math.min(40,swayCm*2.5)-(Number.isFinite(holdS)&&holdS<2?Math.min(20,(2-holdS)*10):0);
+    balanceScore=Math.max(0,Math.min(100,balanceScore));
   }
   // Repeated jumps (pogo, line hops, broad series): ground contact between hops and rhythm.
   const hops=valid.slice().sort((a,b)=>a.takeoff-b.takeoff);
@@ -258,6 +289,16 @@ export function computeJumpMetrics(frames, { fps, aspect, bodyMassKg, heightCm, 
     takeoff_s:round(jump.takeoff,3),
     landing_s:round(jump.landing,3),
     jump_count:valid.length,
+    ankle_extension_angular_velocity_deg_s:round(ankleVel,1),
+    landing_speed_m_s:round(landingSpeed,2),
+    landing_absorb_time_s:round(absorbTime,2),
+    landing_force_bw:round(landingForceBw,1),
+    landing_impulse_ns:round(impulse,0),
+    trunk_lean_max_deg:round(leanMax,1),
+    trunk_sway_deg:round(leanRange,1),
+    hip_sway_cm:round(swayCm,1),
+    balance_score:Number.isFinite(balanceScore)?Math.round(balanceScore):null,
+    stature_assumed:!(Number(heightCm)>0),
     landing_knee_flexion_deg:round(landingFlex,1),
     landing_knee_flexion_velocity_deg_s:round(flexVel,1),
     stick_hold_s:round(holdS,2),
