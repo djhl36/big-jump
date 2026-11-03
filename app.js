@@ -1,5 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { analyzeJump, drawPose } from './pose-analysis.js?v=631810f29a';
+import { analyzeJump, drawPose } from './pose-analysis.js?v=ea9ea08c1a';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -275,7 +275,7 @@ function renderFeed() {
     const thumb = row.signedUrl
       ? `<video src="${escaped(row.signedUrl)}" muted playsinline preload="metadata"></video>`
       : `<div class="thumb-placeholder">영상 미리보기를 불러오지 못했습니다</div>`;
-    card.innerHTML = `<div class="video-thumb uploaded-thumb ${complete?'video-a':'video-b'}">${thumb}<button class="video-center-play" data-open-video="${escaped(row.id)}" aria-label="분석 보기">▶</button><span class="video-duration">${formatTime(row.duration_seconds)}</span><span class="video-tag ${complete?'':'pending-tag'}">${complete?'동작 분석 완료':'분석 대기'}</span></div><div class="post-body"><div class="post-author"><div class="person-avatar avatar-blue">${escaped(row.display_name.slice(0,1))}</div><div><strong>${escaped(row.display_name)} <span class="group-badge">${escaped(group?.name || '미배정')}</span></strong><small>${new Date(row.created_at).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})} · ${escaped(row.exercise)}</small></div><button class="more-button" data-delete-video="${escaped(row.id)}" aria-label="내 영상 삭제">···</button></div>${row.note?`<div class="peer-note"><span>✎</span> 나의 관찰 메모<p>${escaped(row.note)}</p></div>`:''}<div class="metric-row">${metricMarkup('점프 높이',results.jump_height_cm,'cm')}${metricMarkup('체공 시간',results.flight_time_s,'초')}${metricMarkup('추정 파워',results.peak_power_w,'W')}</div><div class="post-foot"><button class="comment-count" data-comments="${escaped(row.id)}">▱ <span>피드백 ${feedback.length}</span></button><div class="reaction-list"></div><button class="analyze-link" data-open-video="${escaped(row.id)}">분석 보기 <span>↗</span></button></div>${latest?`<div class="inline-comment"><div class="mini-avatar">${escaped(latest.display_name.slice(0,1))}</div><span>${escaped(latest.content)}</span></div>`:''}</div>`;
+    card.innerHTML = `<div class="video-thumb uploaded-thumb ${complete?'video-a':'video-b'}">${thumb}<button class="video-center-play" data-open-video="${escaped(row.id)}" aria-label="분석 보기">▶</button><span class="video-duration">${formatTime(row.duration_seconds)}</span><span class="video-tag ${complete?'':'pending-tag'}">${complete?'동작 분석 완료':'분석 대기'}</span></div><div class="post-body"><div class="post-author"><div class="person-avatar avatar-blue">${escaped(row.display_name.slice(0,1))}</div><div><strong>${escaped(row.display_name)} <span class="group-badge">${escaped(group?.name || '미배정')}</span></strong><small>${new Date(row.created_at).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})} · ${escaped(row.exercise)}</small></div><button class="more-button" data-delete-video="${escaped(row.id)}" aria-label="내 영상 삭제">···</button></div>${row.note?`<div class="peer-note"><span>✎</span> 나의 관찰 메모<p>${escaped(row.note)}</p></div>`:''}<div class="metric-row">${metricMarkup('점프 높이',results.jump_height_cm,'cm')}${metricMarkup('체공 시간',results.flight_time_s,'초')}${metricMarkup('추정 파워',plausiblePower(results),'W')}</div><div class="post-foot"><button class="comment-count" data-comments="${escaped(row.id)}">▱ <span>피드백 ${feedback.length}</span></button><div class="reaction-list"></div><button class="analyze-link" data-open-video="${escaped(row.id)}">분석 보기 <span>↗</span></button></div>${latest?`<div class="inline-comment"><div class="mini-avatar">${escaped(latest.display_name.slice(0,1))}</div><span>${escaped(latest.content)}</span></div>`:''}</div>`;
     feed.append(card);
   }
   const add=document.createElement('button');add.className='add-card';add.id='addCard';add.innerHTML='<span class="add-ring">＋</span><strong>내 동작 영상 올리기</strong><span>영상을 올리고 친구들과 관찰 내용을 나눠요.</span><small>MP4 · MOV · 최대 100MB</small>';add.addEventListener('click',openUpload);feed.append(add);
@@ -546,13 +546,24 @@ function resetAnalysis() {
 function setMetric(id,value,unit,digits=1) {
   $(`#${id}`).innerHTML=value===null||value===undefined||!Number.isFinite(Number(value))?`— <small>${unit}</small>`:`${Number(value).toLocaleString('ko-KR',{maximumFractionDigits:digits,minimumFractionDigits:digits&&unit!=='W'?digits:0})} <small>${unit}</small>`;
 }
+// Student CMJ heights above ~75 cm (or power above ~5000 W) mean the take-off/landing detection went wrong.
+const MAX_PLAUSIBLE_JUMP_CM=75, MAX_PLAUSIBLE_POWER_W=5000;
+const jumpLooksWrong=analysis=>Number(analysis?.jump_height_cm)>MAX_PLAUSIBLE_JUMP_CM;
+function plausiblePower(analysis){
+  const power=Number(analysis?.peak_power_w);
+  return analysis?.peak_power_w!=null&&power>0&&power<=MAX_PLAUSIBLE_POWER_W&&!jumpLooksWrong(analysis)?power:null;
+}
 function renderAnalysisMetrics(analysis,{mass,height}={}) {
   if(!analysis)return;
   setMetric('metricJumpHeight',analysis.jump_height_cm,'cm',1);
   setMetric('metricFlightTime',analysis.flight_time_s,'초',2);
-  setMetric('metricPower',analysis.peak_power_w,'W',0);
-  $('#metricHeightMethod').textContent=Number(height)>0?'체공시간 추정 · 신장 비례 비교 포함':'체공시간 기반 · 같은 높이 착지 가정';
-  $('#metricPowerMethod').textContent=analysis.peak_power_w?`${analysis.power_formula} · 참고 추정 · 오차 가능성 큼`:(analysis.power_note||'체중을 입력하면 추정합니다.');
+  const power=plausiblePower(analysis);
+  setMetric('metricPower',power,'W',0);
+  $('#metricHeightMethod').textContent=jumpLooksWrong(analysis)?'비정상적으로 높아요 · 다시 촬영 권장':(Number(height)>0?'체공 시간 기반 · 신장 비교':'체공 시간 기반 추정');
+  $('#metricPowerMethod').textContent=power?'참고 추정치 · 오차 큼'
+    :jumpLooksWrong(analysis)?'점프 측정이 비정상이라 생략'
+    :analysis.power_note?.includes('점프 앤 스틱')?'점프 앤 스틱에서만 추정'
+    :'체중을 입력하면 추정';
   $('#metricKneeAngle').textContent=analysis.knee_extension_angle_deg==null?'—°':`${analysis.knee_extension_angle_deg}°`;
   $('#metricKneeVelocity').textContent=analysis.knee_extension_angular_velocity_deg_s==null?'—°/s':`${analysis.knee_extension_angular_velocity_deg_s}°/s`;
   $('#metricHipVelocity').textContent=analysis.hip_extension_angular_velocity_deg_s==null?'—°/s':`${analysis.hip_extension_angular_velocity_deg_s}°/s`;
@@ -560,7 +571,7 @@ function renderAnalysisMetrics(analysis,{mass,height}={}) {
   $('#metricBalance').textContent=lean==null?'측정 불가':`${lean.toFixed(0)}° 기울기`;
   $('#balanceBar').style.width=lean==null?'0%':`${Math.max(8,100-Math.min(lean,50)*1.5)}%`;
   $('#analysisQuality').textContent='포즈 감지 · 참고값';
-  $('#analysisDisclaimer').textContent='비행시간으로 점프 높이를 추정하며 도약·착지 높이가 같다고 가정합니다. 파워는 Sayers 회귀식 추정치로, 힘판에서 직접 측정한 값이 아니며 원 논문에서 보고한 추정 오차는 수백 W 수준입니다.';
+  $('#analysisDisclaimer').textContent='점프 높이는 체공 시간으로 추정하며 도약·착지 높이가 같다고 가정합니다. 추정 파워는 Sayers 식(51.9×점프높이cm + 48.9×체중kg − 2007)으로 계산한 참고값으로, 힘판 측정이 아니며 오차가 수백 W에 이를 수 있습니다.';
 }
 async function waitMetadata(video) {
   if(video.readyState>=1)return;

@@ -233,7 +233,8 @@ export function computeJumpMetrics(frames, { fps, aspect, bodyMassKg, heightCm, 
   // Sayers equations were built for single vertical jumps (CMJ/SJ); other drills get no power estimate.
   const powerApplies=isSquatJump||exerciseName.includes('점프 앤 스틱');
   const powerW=mass>0&&powerApplies ? (isSquatJump ? 60.7*jumpHeightCm+45.3*mass-2055 : 51.9*jumpHeightCm+48.9*mass-2007) : null;
-  const powerValid=powerW!==null&&powerW>0;
+  // Above ~75 cm the take-off/landing detection is almost certainly wrong for students, so no power.
+  const powerValid=powerW!==null&&powerW>0&&jumpHeightCm<=75;
   // Nose height is ~92% of standing height.
   const visualJumpCm=Number(heightCm)>0&&Number.isFinite(jump.peakY)?Math.max(0,(jump.floor-jump.peakY)/scale*Number(heightCm)*0.92):null;
   const round=(v,d)=>Number.isFinite(v)?Number(v.toFixed(d)):null;
