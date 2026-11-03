@@ -249,21 +249,21 @@ function renderFeed() {
   const feed = $('#feedGrid');
   feed.replaceChildren();
   $('#wallCount').textContent = String(videoRows.length);
-  if(!videoRows.length){const empty=document.createElement('div');empty.className='feed-placeholder';empty.textContent='아직 공유된 동작이 없어요. 첫 영상을 올려주세요.';feed.append(empty);}
-  const groupOrder = id => { const i = groups.findIndex(g=>g.id===id); return i<0 ? groups.length : i; };
-  const ordered = [...videoRows].sort((a,b)=>groupOrder(a.group_id)-groupOrder(b.group_id) || new Date(b.created_at)-new Date(a.created_at));
-  let lastGroup;
-  for (const row of ordered) {
+  if(!videoRows.length&&!groups.length){const empty=document.createElement('div');empty.className='feed-placeholder';empty.textContent='아직 공유된 동작이 없어요. 첫 영상을 올려주세요.';feed.append(empty);}
+  // One column per 모둠 (every 모둠 shows, even before its first video), like a Padlet shelf.
+  const columns = [...groups.map(g=>({ id:g.id, name:g.name })), { id:null, name:'모둠 없음' }]
+    .map(col => ({ ...col, rows: videoRows.filter(row => col.id ? row.group_id === col.id : !groups.some(g=>g.id===row.group_id)).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at)) }))
+    .filter(col => col.id || col.rows.length);
+  for (const col of columns) {
+    const section = document.createElement('section');
+    section.className = 'wall-col';
+    section.dataset.group = col.id || '';
+    section.innerHTML = `<header class="group-section-title"><strong>${escaped(col.name)}</strong><span>${col.rows.length}개 영상</span></header>`;
+    const list = document.createElement('div'); list.className = 'wall-cards';
+    if (!col.rows.length) list.innerHTML = '<p class="wall-empty">아직 올라온 영상이 없어요.</p>';
+    section.append(list); feed.append(section);
+  for (const row of col.rows) {
     const group = groups.find(item => item.id === row.group_id);
-    if (row.group_id !== lastGroup) {
-      lastGroup = row.group_id;
-      const heading = document.createElement('div');
-      heading.className = 'group-section-title';
-      heading.dataset.group = row.group_id || '';
-      const count = ordered.filter(item=>item.group_id===row.group_id).length;
-      heading.innerHTML = `<strong>${escaped(group?.name || '모둠 없음')}</strong><span>${count}개 영상</span>`;
-      feed.append(heading);
-    }
     const results = row.analysis || {};
     const card = document.createElement('article');
     card.className = 'post-card';
@@ -273,12 +273,14 @@ function renderFeed() {
     const latest = feedback[0];
     const complete = Number.isFinite(Number(results.jump_height_cm));
     const thumb = row.signedUrl
-      ? `<video src="${escaped(row.signedUrl)}" muted playsinline preload="metadata"></video>`
+      ? `<video src="${escaped(row.signedUrl)}#t=0.3" muted playsinline preload="metadata"></video>`
       : `<div class="thumb-placeholder">영상 미리보기를 불러오지 못했습니다</div>`;
     card.innerHTML = `<div class="video-thumb uploaded-thumb ${complete?'video-a':'video-b'}">${thumb}<button class="video-center-play" data-open-video="${escaped(row.id)}" aria-label="분석 보기">▶</button><span class="video-duration">${formatTime(row.duration_seconds)}</span><span class="video-tag ${complete?'':'pending-tag'}">${complete?'동작 분석 완료':'분석 대기'}</span></div><div class="post-body"><div class="post-author"><div class="person-avatar avatar-blue">${escaped(row.display_name.slice(0,1))}</div><div><strong>${escaped(row.display_name)} <span class="group-badge">${escaped(group?.name || '미배정')}</span></strong><small>${new Date(row.created_at).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})} · ${escaped(row.exercise)}</small></div><button class="more-button" data-delete-video="${escaped(row.id)}" aria-label="내 영상 삭제">···</button></div>${row.note?`<div class="peer-note"><span>✎</span> 나의 관찰 메모<p>${escaped(row.note)}</p></div>`:''}<div class="metric-row">${metricMarkup('점프 높이',results.jump_height_cm,'cm')}${metricMarkup('착지 힘',jumpLooksWrong(results)?null:results.landing_force_bw,'×체중')}${metricMarkup('추정 파워',plausiblePower(results),'W')}</div><div class="post-foot"><button class="comment-count" data-comments="${escaped(row.id)}">▱ <span>피드백 ${feedback.length}</span></button><div class="reaction-list"></div><button class="analyze-link" data-open-video="${escaped(row.id)}">분석 보기 <span>↗</span></button></div>${latest?`<div class="inline-comment"><div class="mini-avatar">${escaped(latest.display_name.slice(0,1))}</div><span>${escaped(latest.content)}</span></div>`:''}</div>`;
-    feed.append(card);
+    list.append(card);
+    // Some phones record in formats (e.g. iPhone HEVC) that other browsers can't decode.
+    $('video',card)?.addEventListener('error',()=>{$('video',card).replaceWith(Object.assign(document.createElement('div'),{className:'thumb-placeholder',textContent:'이 기기에서는 미리보기를 재생할 수 없는 형식이에요 · 분석 보기는 가능해요'}));});
   }
-  const add=document.createElement('button');add.className='add-card';add.id='addCard';add.innerHTML='<span class="add-ring">＋</span><strong>내 동작 영상 올리기</strong><span>영상을 올리고 친구들과 관찰 내용을 나눠요.</span><small>MP4 · MOV · 최대 100MB</small>';add.addEventListener('click',openUpload);feed.append(add);
+  }
   $$('[data-open-video]',feed).forEach(button=>button.addEventListener('click',()=>openSavedVideo(button.dataset.openVideo)));
   $$('[data-comments]',feed).forEach(button=>button.addEventListener('click',async()=>{const open=openSavedVideo(button.dataset.comments);setTimeout(()=>$('#commentThread').scrollIntoView({behavior:'smooth',block:'start'}),300);await open;}));
   if(analysisDialog.open)renderComments();
@@ -290,7 +292,7 @@ function applyGroupFilter(groupId) {
   $('#filterButton').dataset.group = groupId;
   const group = groups.find(g=>g.id===groupId);
   $('#filterButton').innerHTML = `${group?escaped(group.name):'모든 모둠'} <span>⌄</span>`;
-  $$('.post-card, .group-section-title').forEach(el=>el.classList.toggle('hidden-by-filter',Boolean(groupId)&&el.dataset.group!==groupId));
+  $$('.wall-col').forEach(el=>el.classList.toggle('hidden-by-filter',Boolean(groupId)&&el.dataset.group!==groupId));
   $$('.sidebar .group-link').forEach(link=>link.classList.toggle('active',link.dataset.group===groupId));
 }
 
@@ -341,6 +343,7 @@ let checkTarget = null; // whose checklist is open
 const chosenVideo = new Map(); // `${target}:${activity}` -> video id picked for records
 let currentActivity = (()=>{ try { return localStorage.getItem('bigjump.activity'); } catch { return null; } })();
 if (!ACTIVITIES.some(a=>a.key===currentActivity)) currentActivity = 'jump-stick';
+let openActivity = (()=>{ try { return localStorage.getItem('bigjump.open'); } catch { return null; } })(); // row whose record sheet is open, or none
 const activityByKey = key => ACTIVITIES.find(a=>a.key===key) || ACTIVITIES[1];
 const activityDone = (activity, user = authUser?.id) => activity.items.every(([item])=>isDone(entryFor(user,activity.key,item)));
 // Rotation inside a 모둠: while one member exercises, the next films (or times) and the one after gives feedback and records.
@@ -398,12 +401,17 @@ function renderActivities() {
   const typing = document.activeElement?.closest?.('.record-item');
   const typed = typing ? { key: typing.dataset.checkKey, value: document.activeElement.value } : null;
   const activity = activityByKey(currentActivity);
-  const card = $('.check-card');
-  let tabs = $('#activityTabs');
-  if (!tabs) { tabs = document.createElement('div'); tabs.id = 'activityTabs'; tabs.className = 'activity-tabs'; card.prepend(tabs); }
-  tabs.innerHTML = ACTIVITIES.map((a,i)=>`<button type="button" data-activity="${a.key}" class="${a.key===activity.key?'selected':''} ${activityDone(a)?'done':''}">${a.filmed?'📹':'⏱'} ${escaped(a.name)}${activityDone(a)?' ✓':''}</button>`).join('');
+  const card = $('#checkCard');
+  // Today's activity list: tapping a name opens its record sheet right under it.
+  const myCount = a => a.items.filter(([item])=>isDone(entryFor(authUser?.id,a.key,item))).length;
+  $('#activityList').innerHTML = ACTIVITIES.map((a,i)=>{
+    const n = myCount(a), open = a.key === openActivity;
+    return `<li class="activity-row ${open?'open':''} ${n===a.items.length?'done':''}"><button type="button" class="activity-row-btn" data-activity="${a.key}" aria-expanded="${open}"><span class="act-num">${i+1}</span><span class="act-text"><strong>${escaped(a.name)} <em>${escaped(a.en)}</em></strong><small>${a.filmed?'📹 촬영 분석':'⏱ 시간·횟수 측정'} · ${escaped(a.desc)}</small></span><span class="act-progress"><b>${n===a.items.length?'완료 ✓':`${n}/${a.items.length}`}</b><i style="width:${n/a.items.length*100}%"></i></span><span class="act-chev">⌄</span></button></li>`;
+  }).join('');
+  const openRow = $(`.activity-row-btn[data-activity="${openActivity}"]`)?.parentElement;
+  if (openRow) openRow.append(card); else $('.card-park').append(card);
   let who = $('#checkWho');
-  if (!who) { who = document.createElement('div'); who.id = 'checkWho'; who.className = 'check-who'; tabs.after(who); }
+  if (!who) { who = document.createElement('div'); who.id = 'checkWho'; who.className = 'check-who'; $('.check-head', card).after(who); }
   const me = { user_id: authUser?.id, display_name: membership?.display_name || '나' };
   const target = groupMembers.find(m=>m.user_id===checkTarget) || me;
   const roles = rotationFor(target.user_id);
@@ -445,14 +453,8 @@ function renderActivities() {
     $('.check-list', card).after(post);
   }
   $('#postRecord').disabled = !count;
-  // Today's movement strip: selected activity + overall achievement.
   const done = ACTIVITIES.filter(a=>activityDone(a)).length;
-  $('.session-copy strong').innerHTML = `${escaped(activity.name)} <span>${escaped(activity.en)}</span>`;
-  $('.session-copy small').textContent = activity.desc;
-  $('.progress-top span').textContent = '나의 활동 달성도';
-  $('.progress-top strong').innerHTML = `${done} / ${ACTIVITIES.length} <small>활동</small>`;
-  $('.progress-track span').style.width = `${done/ACTIVITIES.length*100}%`;
-  $('.progress-labels').innerHTML = '<span>기록 4개를 모두 채우면 활동 완료</span>';
+  $('#todaySummary').textContent = `활동 이름을 누르면 기록지가 열려요 · 나의 달성도 ${done}/${ACTIVITIES.length}`;
   if (typed) { const input = $(`.record-item[data-check-key="${typed.key}"] .record-row input`, card); if (input) { input.value = typed.value; input.focus(); } }
   paintTimer();
 }
@@ -532,16 +534,20 @@ function toggleTimer(button) {
   tickTimer();
 }
 
-$('.check-card').addEventListener('click', event => {
+$('#activityList').addEventListener('click', event => {
+  const row = event.target.closest('.activity-row-btn');
+  if (!row) return;
+  if (timer) stopTimer();
+  const key = row.dataset.activity;
+  openActivity = openActivity === key ? null : key;
+  currentActivity = key;
+  try { localStorage.setItem('bigjump.activity', currentActivity); localStorage.setItem('bigjump.open', openActivity || ''); } catch {}
+  renderActivities();
+  if (openActivity) $(`.activity-row-btn[data-activity="${key}"]`)?.scrollIntoView({ behavior:'smooth', block:'start' });
+});
+$('#checkCard').addEventListener('click', event => {
   const member = event.target.closest('[data-check-target]');
   if (member) { checkTarget = member.dataset.checkTarget; renderActivities(); return; }
-  const tab = event.target.closest('[data-activity]');
-  if (tab) {
-    if (timer) stopTimer();
-    currentActivity = tab.dataset.activity;
-    try { localStorage.setItem('bigjump.activity', currentActivity); } catch {}
-    renderActivities(); renderBoard(); return;
-  }
   if (event.target.closest('#postRecord')) { postRecord(); return; }
   const timerButton = event.target.closest('.timer-button');
   if (timerButton) { toggleTimer(timerButton); return; }
@@ -659,7 +665,6 @@ function openUpload() {
   uploadDialog.showModal();
 }
 $('#uploadButton').addEventListener('click',openUpload);
-$('#addCard').addEventListener('click',openUpload);
 $('#closeUpload').addEventListener('click',()=>uploadDialog.close());
 $('#cancelUpload').addEventListener('click',()=>uploadDialog.close());
 // Some Android galleries hand over files with an empty MIME type, so also accept by extension.
@@ -729,10 +734,77 @@ function renderAnalysisMetrics(analysis,{mass,height}={}) {
 }
 async function waitMetadata(video) {
   if(video.readyState>=1)return;
+  const unsupported=()=>new Error('이 기기 브라우저가 재생하지 못하는 영상 형식이에요 (예: 아이폰 HEVC). 올린 학생이 다시 올리면 자동으로 호환 형식으로 바뀌어요.');
+  if(video.error)throw unsupported();
   await new Promise((resolve,reject)=>{
     video.addEventListener('loadedmetadata',resolve,{once:true});
-    video.addEventListener('error',()=>reject(new Error('이 영상 형식을 브라우저가 읽지 못합니다.')),{once:true});
+    video.addEventListener('error',()=>reject(unsupported()),{once:true});
   });
+  await fixInfiniteDuration(video);
+}
+// Recorder-made MP4/WebM files may report an infinite duration until the browser seeks to the end.
+async function fixInfiniteDuration(video){
+  if(Number.isFinite(video.duration))return;
+  await new Promise(resolve=>{
+    const done=()=>{clearTimeout(timer);video.removeEventListener('durationchange',check);resolve();};
+    const check=()=>{if(Number.isFinite(video.duration))done();};
+    const timer=setTimeout(done,3000);
+    video.addEventListener('durationchange',check);
+    video.currentTime=1e7;
+  });
+  video.currentTime=0;
+}
+
+// Re-encode the clip on the uploading phone to H.264 MP4 (max 720p) so every phone and PC can play it.
+// The uploading phone can always decode its own camera format (e.g. iPhone HEVC); other devices often can't.
+function sharableRecorderType(){
+  if(!window.MediaRecorder||!HTMLCanvasElement.prototype.captureStream)return null;
+  return ['video/mp4;codecs=avc1.42E01F','video/mp4;codecs=avc1','video/mp4'].find(type=>MediaRecorder.isTypeSupported(type))||null;
+}
+async function transcodeForSharing(url,{maxSide=720,onProgress=()=>{}}={}){
+  const mimeType=sharableRecorderType();
+  if(!mimeType)return null;
+  const video=document.createElement('video');
+  video.muted=true;video.playsInline=true;video.preload='auto';video.src=url;
+  video.style.cssText='position:fixed;left:0;top:0;width:4px;height:4px;opacity:.01;pointer-events:none;z-index:-1';
+  document.body.append(video);
+  let recorder=null,timeout=null;
+  try{
+    await waitMetadata(video);
+    const scale=Math.min(1,maxSide/Math.max(video.videoWidth,video.videoHeight));
+    const width=Math.max(2,Math.round(video.videoWidth*scale/2)*2),height=Math.max(2,Math.round(video.videoHeight*scale/2)*2);
+    const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
+    const ctx=canvas.getContext('2d');
+    const chunks=[];
+    recorder=new MediaRecorder(canvas.captureStream(30),{mimeType,videoBitsPerSecond:2_500_000});
+    recorder.ondataavailable=event=>{if(event.data.size)chunks.push(event.data);};
+    const stopped=new Promise(resolve=>{recorder.onstop=resolve;});
+    let finished=false;
+    const draw=()=>{
+      if(finished)return;
+      ctx.drawImage(video,0,0,width,height);
+      onProgress(Math.min(1,video.currentTime/video.duration));
+      if(video.requestVideoFrameCallback)video.requestVideoFrameCallback(draw);else requestAnimationFrame(draw);
+    };
+    ctx.drawImage(video,0,0,width,height);
+    recorder.start(1000);
+    const ended=new Promise(resolve=>video.addEventListener('ended',resolve,{once:true}));
+    const tooSlow=new Promise(resolve=>{timeout=setTimeout(()=>resolve('slow'),(video.duration*2+8)*1000);});
+    await video.play();
+    draw();
+    const outcome=await Promise.race([ended,tooSlow]);
+    finished=true;
+    recorder.stop();await stopped;
+    if(outcome==='slow')return null;
+    const blob=new Blob(chunks,{type:mimeType.split(';')[0]});
+    return blob.size>1000?blob:null;
+  }catch(error){
+    console.warn('transcode failed',error);
+    if(recorder?.state==='recording')recorder.stop();
+    return null;
+  }finally{
+    clearTimeout(timeout);video.pause();video.removeAttribute('src');video.load();video.remove();
+  }
 }
 async function runPoseAnalysis(video,{mass,height,exercise}={}) {
   $('#analysisProgress').classList.remove('hidden-by-filter');$('#analysisIdle').classList.add('hidden-by-filter');
@@ -788,7 +860,7 @@ $('#submitUpload').addEventListener('click',async()=>{
   analysisDialog.showModal();
   $('#analysisQuality').textContent='측정 준비 중';
   try {
-    await waitMetadata(localVideo);
+    await waitMetadata(localVideo).catch(()=>{throw new Error("이 휴대폰 브라우저가 이 영상 형식을 읽지 못해요. 카메라 설정에서 아이폰은 '포맷 → 높은 호환성', 갤럭시는 '고효율 동영상'을 끄고 다시 찍어주세요.");});
     if(localVideo.duration>30)throw new Error('분석은 30초 이하 영상에서 지원합니다. 짧은 클립으로 잘라 다시 올려주세요.');
     const mass=Number($('#weightInput').value)||null;
     const height=Number($('#heightInput').value)||null;
@@ -796,10 +868,17 @@ $('#submitUpload').addEventListener('click',async()=>{
     const exercise=$('#exerciseInput').value;
     const chosenGroup=$('#uploadGroupInput').value||null;
     const analysis=await runPoseAnalysis(localVideo,{mass,height,exercise});
+    $('#analysisQuality').textContent='공유용 영상 변환 중';
+    $('#analysisProgress').classList.remove('hidden-by-filter');
+    const converted=await transcodeForSharing(objectUrl,{onProgress:value=>{const percent=Math.round(value*100);$('#analysisProgress b').textContent=`모든 기기에서 볼 수 있게 변환 중 · ${percent}%`;$('#analysisProgress span').style.width=`${percent}%`;}});
+    $('#analysisProgress').classList.add('hidden-by-filter');
     $('#analysisQuality').textContent='저장·공유 중';
-    const ext=(file.name.split('.').pop()||'mp4').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,6)||'mp4';
+    const shared=converted||file;
+    const ext=converted?'mp4':(file.name.split('.').pop()||'mp4').toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,6)||'mp4';
     const path=`${membership.class_id}/${authUser.id}/${crypto.randomUUID()}.${ext}`;
-    const {error:uploadError}=await supabase.storage.from(videoBucket).upload(path,file,{contentType:file.type||'video/mp4',upsert:false,cacheControl:'3600'});
+    // QuickTime (.mov) with H.264 plays in Chrome only when served as MP4.
+    const contentType=converted?'video/mp4':(!file.type||file.type==='video/quicktime'?'video/mp4':file.type);
+    const {error:uploadError}=await supabase.storage.from(videoBucket).upload(path,shared,{contentType,upsert:false,cacheControl:'3600'});
     if(uploadError)throw uploadError;
     const record={...analysis};delete record.samples;
     const videoRow={
@@ -917,15 +996,15 @@ $('#filterButton').addEventListener('click',()=>{
   const ids=['',...groups.map(group=>group.id)];
   applyGroupFilter(ids[(ids.indexOf($('#filterButton').dataset.group||'')+1)%ids.length]);
 });
-$$('.view-toggle button').forEach((button,index)=>button.addEventListener('click',()=>{
-  $$('.view-toggle button').forEach(item=>item.classList.remove('selected'));button.classList.add('selected');$('#feedGrid').classList.toggle('list-view',index===1);
-}));
 $$('.nav-item').forEach(button=>button.addEventListener('click',()=>{
   $$('.nav-item').forEach(item=>item.classList.toggle('active',item===button));
   if(button.dataset.view==='analysis')openUpload();
-  else if(button.dataset.view==='missions')document.querySelector('.right-rail')?.scrollIntoView({behavior:'smooth',block:'center'});
+  else $(button.dataset.view==='missions'?'#todaySection':'#wallSection')?.scrollIntoView({behavior:'smooth',block:'start'});
 }));
-$('.worksheet-button').addEventListener('click',()=>document.querySelector('.check-card')?.scrollIntoView({behavior:'smooth',block:'center'}));
+// Big-screen wall for the end-of-class gathering: hides everything but the 모둠 columns.
+function setFocus(on){document.body.classList.toggle('wall-focus',on);$('#focusButton').textContent=on?'✕ 크게 보기 끝내기':'⛶ 크게 보기';if(on)window.scrollTo({top:0});}
+$('#focusButton').addEventListener('click',()=>setFocus(!document.body.classList.contains('wall-focus')));
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&document.body.classList.contains('wall-focus')&&!document.querySelector('dialog[open]'))setFocus(false);});
 
 function teacherHeaders() { return { 'x-teacher-code': $('#teacherPin').value.trim() }; }
 function teacherTab(name) {
